@@ -1,0 +1,37 @@
+{
+  "name": "household-health",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "dev": "tsx watch --env-file=.env src/server.ts",
+    "start": "node --env-file=.env --import tsx src/server.ts",
+    "db:migrate": "tsx --env-file=.env scripts/migrate.ts",
+    "typecheck": "tsc --noEmit",
+    "test": "tsx --test test/vitals.test.ts && tsx --env-file=.env --test test/integration.test.ts test/graph.test.ts test/members.test.ts",
+    "audit:verify": "tsx --env-file=.env scripts/verify-audit.ts"
+  },
+  "dependencies": {
+    "@fastify/static": "10.1.4",
+    "@langchain/core": "1.2.12",
+    "@langchain/langgraph": "1.4.18",
+    "@langchain/openai": "1.5.13",
+    "@langfuse/langchain": "5.11.1",
+    "@langfuse/otel": "5.11.1",
+    "@langfuse/tracing": "5.11.1",
+    "@opentelemetry/sdk-node": "0.222.0",
+    "drizzle-orm": "0.45.3",
+    "fastify": "5.12.5",
+    "pg": "8.23.0",
+    "zod": "4.6.5"
+  },
+  "devDependencies": {
+    "@types/node": "24.19.0",
+    "@types/pg": "8.23.1",
+    "tsx": "4.23.15",
+    "typescript": "7.0.2"
+  }
+}

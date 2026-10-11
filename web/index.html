@@ -1,0 +1,501 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Household Health</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Atkinson+Hyperlegible+Next:wght@400;600;700&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --paper: #F3F6F8; --sheet: #FFFFFF; --ink: #18212B; --muted: #5E6B78; --line: #D6DEE5;
+    --pen: #2357C6; --pen-wash: #E8EEFB; --caution: #8A5300; --caution-wash: #FBF1E1; --saved: #1E7A4C; --alert: #B42318;
+    --font: "Atkinson Hyperlegible Next", "Atkinson Hyperlegible", system-ui, -apple-system, "Segoe UI", sans-serif;
+    --r-sm: 6px; --r-lg: 14px;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --paper: #0F1418; --sheet: #172027; --ink: #E7EDF2; --muted: #9AA8B5; --line: #2A3640;
+            --pen: #7FA3F0; --pen-wash: #1C2A44; --caution: #E7B160; --caution-wash: #2E2414; --saved: #5CC08F; --alert: #F2867B; }
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body { font: 17px/1.5 var(--font); color: var(--ink); background: var(--paper); font-variant-numeric: tabular-nums;
+         padding-top: env(safe-area-inset-top, 0px); }
+  button, input, textarea, select { font: inherit; color: inherit; }
+  button { cursor: pointer; }
+  :focus-visible { outline: 3px solid var(--pen); outline-offset: 2px; }
+  [hidden] { display: none !important; }
+
+  /* layout */
+  .app { display: grid; grid-template-columns: 340px 1fr; height: 100%; }
+  .snapshot { border-right: 1px solid var(--line); overflow-y: auto; padding: 20px 22px 32px; background: var(--sheet); }
+  .main { display: grid; grid-template-rows: auto 1fr auto; min-height: 0; }
+  header { display: flex; align-items: center; gap: 12px; padding: 12px 20px; border-bottom: 1px solid var(--line); }
+  .who { display: flex; gap: 6px; flex-wrap: wrap; }
+  .who button { border: 1px solid var(--line); background: transparent; border-radius: 999px; padding: 4px 14px; }
+  .who button[aria-pressed="true"] { background: var(--ink); color: var(--paper); border-color: var(--ink); }
+  header .spacer { flex: 1; }
+  .linkish { background: none; border: 0; color: var(--muted); text-decoration: underline; text-underline-offset: 3px; padding: 4px; }
+  .show-snapshot { display: none; }
+
+  /* snapshot */
+  .snapshot h1 { font-size: 26px; line-height: 1.15; margin: 0 0 2px; font-weight: 700; letter-spacing: -0.01em; }
+  .snapshot .sub { color: var(--muted); margin: 0 0 20px; font-size: 15px; }
+  .snapshot h2 { font-size: 15px; font-weight: 700; margin: 22px 0 6px; color: var(--muted); }
+  .snapshot ul { list-style: none; margin: 0; padding: 0; }
+  .snapshot li { padding: 7px 0; border-top: 1px solid var(--line); font-size: 16px; }
+  .snapshot li small { display: block; color: var(--muted); font-size: 14px; }
+  .snapshot .empty { color: var(--muted); font-size: 15px; padding: 4px 0; }
+  .allergy-block { border: 2px solid var(--alert); border-radius: var(--r-sm); padding: 8px 12px; }
+  .allergy-block li { border-top-color: color-mix(in srgb, var(--alert) 25%, transparent); }
+  .allergy-block li:first-child { border-top: 0; }
+  .allergy-block strong { color: var(--alert); }
+
+  /* conversation */
+  .log { overflow-y: auto; padding: 24px 20px 12px; }
+  .log-inner { max-width: 720px; margin: 0 auto; display: flex; flex-direction: column; gap: 14px; }
+  .msg { max-width: 90%; }
+  .msg.user { align-self: flex-end; background: var(--pen-wash); color: var(--ink); padding: 10px 14px; border-radius: var(--r-lg) var(--r-lg) 4px var(--r-lg); white-space: pre-wrap; }
+  .msg.bot { align-self: flex-start; }
+  .msg.bot p { margin: 0 0 8px; } .msg.bot p:last-child { margin: 0; }
+  .msg.bot ul { margin: 4px 0 8px; padding-left: 20px; }
+  .sources { margin-top: 6px; font-size: 14px; color: var(--muted); }
+  .sources summary { cursor: pointer; }
+  .sources ul { margin: 4px 0 0; padding-left: 18px; }
+  .welcome { color: var(--muted); max-width: 560px; }
+  .welcome strong { color: var(--ink); font-weight: 600; }
+  .welcome ul { padding-left: 20px; margin: 8px 0 0; }
+  .welcome li { margin: 4px 0; }
+  .welcome button { border: 0; background: none; color: var(--pen); padding: 0; text-align: left; text-decoration: underline; text-underline-offset: 3px; }
+  .thinking { color: var(--muted); font-size: 15px; }
+  .error { color: var(--alert); }
+
+  /* the one bold element: an entry waiting for a parent's OK, drawn like a line in a ruled log book */
+  .entry { align-self: stretch; background: var(--sheet); border: 1px solid var(--line); border-left: 4px solid var(--pen);
+           border-radius: 4px var(--r-lg) var(--r-lg) 4px; padding: 14px 16px 14px 18px; }
+  .entry h3 { margin: 0 0 8px; font-size: 16px; font-weight: 700; }
+  .entry ol { list-style: none; margin: 0 0 12px; padding: 0; }
+  .entry li { padding: 8px 0; border-top: 1px dashed var(--line); font-size: 18px; }
+  .entry li:first-child { border-top: 0; }
+  .entry .assume { display: block; margin-top: 4px; font-size: 14px; color: var(--caution); background: var(--caution-wash); padding: 2px 8px; border-radius: 4px; width: fit-content; }
+  .entry .actions { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+  .btn { border-radius: 999px; padding: 9px 22px; border: 1px solid var(--line); background: transparent; }
+  .btn.primary { background: var(--pen); color: #fff; border-color: var(--pen); font-weight: 600; }
+  @media (prefers-color-scheme: dark) { .btn.primary { color: #0F1418; } }
+  .btn:disabled { opacity: .5; cursor: default; }
+  .entry .hint { color: var(--muted); font-size: 14px; }
+  .entry.saved { border-left-color: var(--saved); }
+  .entry.saved h3 { color: var(--saved); }
+  .entry.closed { opacity: .65; border-left-color: var(--line); }
+
+  /* composer */
+  .composer { border-top: 1px solid var(--line); padding: 12px 20px calc(12px + env(safe-area-inset-bottom, 0px)); background: var(--paper); }
+  .composer form { max-width: 720px; margin: 0 auto; display: flex; gap: 10px; align-items: flex-end; }
+  .composer textarea { flex: 1; resize: none; min-height: 48px; max-height: 180px; border: 1px solid var(--line); background: var(--sheet);
+                       border-radius: var(--r-lg); padding: 11px 14px; line-height: 1.4; }
+  .composer textarea:focus-visible { outline-offset: 0; }
+  .composer .btn.primary { padding: 11px 22px; }
+
+  /* sign-in and activity */
+  .center { min-height: 100%; display: grid; place-items: center; padding: 24px; }
+  .signin { width: min(420px, 100%); }
+  .signin h1 { font-size: 30px; margin: 0 0 6px; }
+  .signin p { color: var(--muted); margin: 0 0 18px; }
+  .signin input { width: 100%; padding: 11px 14px; border: 1px solid var(--line); border-radius: var(--r-sm); background: var(--sheet); margin-bottom: 12px; }
+  dialog { border: 1px solid var(--line); border-radius: var(--r-lg); background: var(--sheet); color: var(--ink); width: min(1100px, 94vw); max-height: 86vh; padding: 0; }
+  dialog::backdrop { background: rgb(0 0 0 / .35); }
+  dialog .head { display: flex; justify-content: space-between; align-items: center; padding: 14px 20px; border-bottom: 1px solid var(--line); position: sticky; top: 0; background: var(--sheet); }
+  dialog h2 { margin: 0; font-size: 20px; }
+  .table-wrap { overflow-x: auto; padding: 0 20px 20px; }
+  table { border-collapse: collapse; width: 100%; font-size: 15px; }
+  th, td { text-align: left; padding: 8px 10px 8px 0; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { color: var(--muted); font-weight: 600; }
+  .activity-details { min-width: 240px; overflow-wrap: anywhere; }
+  .activity-details div + div { margin-top: 4px; }
+  .activity-member { display: block; color: var(--muted); margin-top: 4px; }
+  #memberDialog { width: min(480px, 94vw); }
+  .profile-form { padding: 20px; }
+  .profile-form label { display: block; margin-bottom: 12px; }
+  .profile-form input, .profile-form select { display: block; width: 100%; padding: 9px 12px; border: 1px solid var(--line); border-radius: var(--r-sm); background: var(--sheet); }
+  .profile-form .actions { display: flex; gap: 10px; }
+
+  @media (max-width: 860px) {
+    .app { grid-template-columns: 1fr; }
+    .snapshot { position: fixed; inset: 0; z-index: 5; border: 0; padding-top: calc(20px + env(safe-area-inset-top, 0px)); }
+    .snapshot:not(.open) { display: none; }
+    .show-snapshot { display: inline; }
+    .close-snapshot { display: inline-block; margin-bottom: 12px; }
+  }
+  @media (min-width: 861px) { .close-snapshot { display: none; } }
+  @media (prefers-reduced-motion: no-preference) {
+    .entry.saved { animation: settle .35s ease-out; }
+    @keyframes settle { from { background: color-mix(in srgb, var(--saved) 12%, var(--sheet)); } to { background: var(--sheet); } }
+  }
+</style>
+</head>
+<body>
+
+<div id="signin" class="center" hidden>
+  <form class="signin" id="signinForm">
+    <h1>Household Health</h1>
+    <p id="signinHint">Sign in with your household email, or create a household to get started.</p>
+    <label for="email">Email</label>
+    <input id="email" type="email" autocomplete="email" required>
+    <div id="householdFields" hidden>
+      <label for="ownerName">Your name</label>
+      <input id="ownerName" autocomplete="name" maxlength="200">
+      <label for="householdName">Household name</label>
+      <input id="householdName" placeholder="Our family" maxlength="200">
+    </div>
+    <button class="btn primary" id="signinSubmit" type="submit">Sign in</button>
+    <button class="linkish" id="toggleHousehold" type="button">Create a household</button>
+    <p id="signinError" class="error" role="alert"></p>
+  </form>
+</div>
+
+<div id="app" class="app" hidden>
+  <aside class="snapshot" id="snapshot" aria-label="Snapshot">
+    <button class="linkish close-snapshot" id="closeSnapshot" type="button">Back to conversation</button>
+    <div id="snapshotBody"></div>
+  </aside>
+
+  <section class="main">
+    <header>
+      <div class="who" id="who" role="group" aria-label="Who is this about"></div>
+      <button class="linkish" id="addMember" type="button" hidden>Add member</button>
+      <span class="spacer"></span>
+      <button class="linkish show-snapshot" id="openSnapshot" type="button">Snapshot</button>
+      <button class="linkish" id="openActivity" type="button" hidden>Activity</button>
+      <button class="linkish" id="signout" type="button">Sign out</button>
+    </header>
+
+    <div class="log" id="log" aria-live="polite"><div class="log-inner" id="logInner"></div></div>
+
+    <div class="composer">
+      <form id="composer">
+        <label for="input" class="sr" hidden>Message</label>
+        <textarea id="input" rows="1" placeholder="Record something or ask a question" autocomplete="off"></textarea>
+        <button class="btn primary" id="send" type="submit">Send</button>
+      </form>
+    </div>
+  </section>
+</div>
+
+<dialog id="memberDialog" aria-labelledby="memberTitle">
+  <div class="head"><h2 id="memberTitle">Add household member</h2><button class="linkish" id="closeMember" type="button">Close</button></div>
+  <form id="memberForm" class="profile-form">
+    <label>Full name <input id="memberName" required maxlength="200" autocomplete="off"></label>
+    <label>Preferred name (optional) <input id="memberPreferredName" maxlength="200" autocomplete="off"></label>
+    <label>Date of birth (optional) <input id="memberBirth" type="date"></label>
+    <label>Eye color (optional) <input id="memberEyes" maxlength="100" autocomplete="off"></label>
+    <label>Sex (optional) <select id="memberSex"><option value="">Not recorded</option><option value="female">Female</option><option value="male">Male</option><option value="other">Other</option><option value="unknown">Unknown</option></select></label>
+    <label>Blood type (optional) <select id="memberBlood"><option value="">Not recorded</option><option>A+</option><option>A-</option><option>B+</option><option>B-</option><option>AB+</option><option>AB-</option><option>O+</option><option>O-</option></select></label>
+    <p id="memberError" class="error" role="alert"></p>
+    <div class="actions"><button class="btn primary" id="saveMember" type="submit">Add member</button><button class="btn" id="cancelMember" type="button">Cancel</button></div>
+  </form>
+</dialog>
+
+<dialog id="activity" aria-labelledby="activityTitle">
+  <div class="head"><h2 id="activityTitle">Activity</h2><button class="linkish" id="closeActivity" type="button">Close</button></div>
+  <div class="table-wrap"><table><thead><tr><th>When</th><th>Who</th><th>What</th><th>Record</th><th>Details</th></tr></thead><tbody id="activityRows"></tbody></table></div>
+</dialog>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const state = { email: localStorage.getItem("hh.email"), me: null, memberId: null, history: [], conversationId: crypto.randomUUID() };
+
+async function api(path, opts = {}) {
+  const res = await fetch("/api" + path, {
+    ...opts,
+    headers: {
+      ...(opts.body != null ? { "content-type": "application/json" } : {}),
+      "x-dev-user": state.email ?? "",
+      ...(opts.headers || {}),
+    },
+  });
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok) throw Object.assign(new Error(body.error || `Request failed (${res.status})`), { status: res.status });
+  return body;
+}
+
+const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+/** Small, safe markdown: paragraphs, bullet lists, **bold**. Input is escaped first. */
+function md(text) {
+  const lines = esc(text).replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>").split(/\n/);
+  let html = "", list = false;
+  for (const l of lines) {
+    const item = /^\s*[-*•]\s+(.*)/.exec(l) || /^\s*\d+\.\s+(.*)/.exec(l);
+    if (item) { if (!list) { html += "<ul>"; list = true; } html += `<li>${item[1]}</li>`; continue; }
+    if (list) { html += "</ul>"; list = false; }
+    if (l.trim()) html += `<p>${l}</p>`;
+  }
+  return html + (list ? "</ul>" : "");
+}
+const member = () => state.me?.members.find((m) => m.id === state.memberId);
+
+// ───── sign-in ─────
+let creatingHousehold = false;
+$("toggleHousehold").onclick = () => {
+  creatingHousehold = !creatingHousehold;
+  $("householdFields").hidden = !creatingHousehold;
+  $("ownerName").required = $("householdName").required = creatingHousehold;
+  $("signinSubmit").textContent = creatingHousehold ? "Create household" : "Sign in";
+  $("toggleHousehold").textContent = creatingHousehold ? "Sign in to an existing household" : "Create a household";
+  $("signinError").textContent = "";
+};
+$("signinForm").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  state.email = $("email").value.trim();
+  $("signinSubmit").disabled = $("toggleHousehold").disabled = true;
+  try {
+    if (creatingHousehold) {
+      const result = await api("/households", { method: "POST", body: JSON.stringify({
+        email: state.email, displayName: $("ownerName").value.trim(), name: $("householdName").value.trim(),
+        timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+      }) });
+      state.email = result.email;
+      $("toggleHousehold").onclick();
+    }
+    await boot(); localStorage.setItem("hh.email", state.email);
+  }
+  catch (err) { $("signinError").textContent = err.message; }
+  finally { $("signinSubmit").disabled = $("toggleHousehold").disabled = false; }
+});
+$("signout").onclick = () => { localStorage.removeItem("hh.email"); location.reload(); };
+
+async function boot() {
+  state.me = await api("/me");
+  state.memberId = state.me.members[0]?.id ?? null;
+  $("signin").hidden = true; $("app").hidden = false;
+  $("openActivity").hidden = state.me.user.role !== "owner";
+  $("addMember").hidden = state.me.user.role === "viewer";
+  renderWho(); welcome(); refreshSnapshot(); $("input").focus();
+}
+
+function renderWho() {
+  $("who").innerHTML = state.me.members.map((m) =>
+    `<button type="button" data-id="${m.id}" aria-pressed="${m.id === state.memberId}">${esc(m.name)}</button>`).join("");
+  $("who").querySelectorAll("button").forEach((b) => b.onclick = () => selectMember(b.dataset.id));
+  $("input").disabled = $("send").disabled = !state.memberId;
+  $("input").placeholder = state.memberId ? "Record something or ask a question" : "Add a household member to get started";
+}
+
+// ───── member profiles ─────
+$("addMember").onclick = () => {
+  $("memberForm").reset(); $("memberError").textContent = "";
+  $("memberBirth").max = new Date().toLocaleDateString("en-CA");
+  $("memberDialog").showModal(); $("memberName").focus();
+};
+$("closeMember").onclick = $("cancelMember").onclick = () => $("memberDialog").close();
+$("memberForm").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  $("saveMember").disabled = true; $("memberError").textContent = "";
+  try {
+    const m = await api("/members", { method: "POST", body: JSON.stringify({
+      fullName: $("memberName").value.trim(), preferredName: $("memberPreferredName").value.trim() || null,
+      dateOfBirth: $("memberBirth").value || null, sex: $("memberSex").value || null, bloodType: $("memberBlood").value || null,
+      eyeColor: $("memberEyes").value.trim() || null,
+    }) });
+    state.me.members.push(m); state.memberId = m.id;
+    renderWho(); await refreshSnapshot(); $("memberDialog").close();
+    add(`${esc(m.name)} added to your household. You can now record their health information.`, "msg bot");
+    $("input").focus();
+  } catch (err) { $("memberError").textContent = err.message; }
+  finally { $("saveMember").disabled = false; }
+});
+function selectMember(id) {
+  if (id === state.memberId) return;
+  state.memberId = id; renderWho(); refreshSnapshot();
+}
+
+// ───── snapshot ─────
+async function refreshSnapshot() {
+  if (!state.memberId) { $("snapshotBody").innerHTML = `<h1>Your household</h1><p class="empty">No members yet. ${state.me.user.role === "viewer" ? "Ask a household owner or editor to add a member." : "Choose Add member to create the first profile."}</p>`; return; }
+  try {
+    const s = await api(`/members/${state.memberId}/snapshot`);
+    const age = s.profile.dateOfBirth ? ageFrom(s.profile.dateOfBirth) : null;
+    const list = (items, fn, empty) => items.length ? `<ul>${items.map(fn).join("")}</ul>` : `<p class="empty">${empty}</p>`;
+    $("snapshotBody").innerHTML = `
+      <h1>${esc(s.profile.name)}</h1>
+      <p class="sub">${[age, s.profile.dateOfBirth && `born ${esc(s.profile.dateOfBirth)}`, s.profile.bloodType && `blood type ${esc(s.profile.bloodType)}`, s.profile.eyeColor && `${esc(s.profile.eyeColor)} eyes`].filter(Boolean).join(", ") || `Add a date of birth by telling me, e.g. “${esc(s.profile.name)} was born 2017-05-03”.`}</p>
+      <h2>Allergies</h2>
+      ${s.allergies.length ? `<ul class="allergy-block">${s.allergies.map((a) => `<li><strong>${esc(a.substance)}</strong>${a.reaction ? `<small>${esc(a.reaction)}, ${esc(a.severity)}</small>` : `<small>${esc(a.severity)}</small>`}</li>`).join("")}</ul>` : `<p class="empty">None recorded</p>`}
+      <h2>Taking now</h2>
+      ${list(s.medications, (m) => `<li>${esc(m.name)}${m.dose ? ` ${esc(m.dose)}` : ""}<small>${[m.frequency, m.since && `since ${m.since}`].filter(Boolean).map(esc).join(", ")}</small></li>`, "No current medications")}
+      <h2>Latest readings</h2>
+      ${list(s.vitals, (v) => `<li>${esc(v.name)}: ${esc(v.value)}<small>${esc(v.at)}</small></li>`, "No readings yet")}
+      <h2>Coming up</h2>
+      ${list(s.upcoming, (a) => `<li>${esc(a.at)}<small>${esc([a.with, a.location].filter(Boolean).join(", "))}</small></li>`, "No upcoming appointments")}`;
+  } catch (err) { $("snapshotBody").innerHTML = `<p class="error">${esc(err.message)}</p>`; }
+}
+function ageFrom(dob) {
+  const d = new Date(dob + "T00:00:00"), n = new Date();
+  let y = n.getFullYear() - d.getFullYear();
+  if (n < new Date(n.getFullYear(), d.getMonth(), d.getDate())) y--;
+  return y < 2 ? `${Math.max(0, (n.getFullYear() - d.getFullYear()) * 12 + n.getMonth() - d.getMonth())} months` : `${y} years`;
+}
+$("openSnapshot").onclick = () => $("snapshot").classList.add("open");
+$("closeSnapshot").onclick = () => $("snapshot").classList.remove("open");
+
+// ───── conversation ─────
+function add(html, cls) {
+  const el = document.createElement("div");
+  el.className = cls; el.innerHTML = html;
+  $("logInner").appendChild(el);
+  $("log").scrollTop = $("log").scrollHeight;
+  return el;
+}
+function welcome() {
+  if (!state.memberId) {
+    add(state.me.user.role === "viewer" ? "Your household has no members yet. Ask an owner or editor to add one." : "Welcome! Choose Add member to create a profile for yourself or someone in your household.", "msg bot welcome");
+    return;
+  }
+  const name = member()?.name ?? "them";
+  const examples = [`Weight 32.4 kg this morning`, `Started amoxicillin 250 mg twice a day for 10 days`, `Dentist next Tuesday at 3:30 with Dr. Patel`, `What is ${name} taking right now?`];
+  const el = add(`<p>Tell me what happened in your own words and I'll get it ready to save, or ask about anything recorded. Try:</p>
+    <ul>${examples.map((x) => `<li><button type="button">${esc(x)}</button></li>`).join("")}</ul>`, "msg bot welcome");
+  el.querySelectorAll("button").forEach((b) => b.onclick = () => { $("input").value = b.textContent; $("input").focus(); grow(); });
+}
+
+const input = $("input");
+function grow() { input.style.height = "auto"; input.style.height = Math.min(input.scrollHeight, 180) + "px"; }
+input.addEventListener("input", grow);
+input.addEventListener("keydown", (e) => {
+  if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { const save = document.querySelector(".entry:not(.closed):not(.saved) .primary"); if (save) { e.preventDefault(); save.click(); return; } }
+  if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); $("composer").requestSubmit(); }
+});
+
+$("composer").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const message = input.value.trim();
+  if (!message) return;
+  input.value = ""; grow();
+  add(esc(message), "msg user");
+  const wait = add("Working on it…", "msg bot thinking");
+  $("send").disabled = true;
+  try {
+    const r = await api("/chat", { method: "POST", body: JSON.stringify({ message, memberId: state.memberId, conversationId: state.conversationId, history: state.history }) });
+    wait.remove();
+    state.history.push({ role: "user", content: message });
+    if (r.memberId && r.memberId !== state.memberId) selectMember(r.memberId);
+    render(r);
+  } catch (err) {
+    wait.className = "msg bot error"; wait.textContent = err.message;
+  } finally {
+    $("send").disabled = false; input.focus();
+  }
+});
+
+function remember(text) { state.history.push({ role: "assistant", content: text }); state.history = state.history.slice(-12); }
+
+function render(r) {
+  if (r.type === "answer") {
+    const src = r.sources?.length ? `<details class="sources"><summary>Based on ${r.sources.length} record${r.sources.length > 1 ? "s" : ""}</summary><ul>${r.sources.map((s) => `<li>${esc(s.label)}</li>`).join("")}</ul></details>` : "";
+    add(md(r.text) + src, "msg bot"); remember(r.text);
+  } else if (r.type === "proposal") {
+    renderEntry(r); remember("Ready to save: " + r.items.map((i) => i.display).join("; "));
+  } else {
+    add(md(r.text), "msg bot"); remember(r.text);
+  }
+}
+
+function renderEntry(r) {
+  document.querySelectorAll(".entry:not(.saved):not(.closed)").forEach((el) => el.classList.add("closed"));
+  const who = state.me.members.find((m) => m.id === r.memberId)?.name ?? "";
+  const el = add(`
+    <h3>Ready to save for ${esc(who)}</h3>
+    <ol>${r.items.map((i) => `<li>${esc(i.display)}${i.assumptions.map((a) => `<span class="assume">${esc(a)}</span>`).join("")}</li>`).join("")}</ol>
+    <div class="actions">
+      <button class="btn primary" type="button">Save</button>
+      <button class="btn" type="button" data-act="discard">Discard</button>
+      <span class="hint">To change something, just reply with the correction.</span>
+    </div>`, "entry");
+  const [save, discard] = el.querySelectorAll("button");
+  save.onclick = async () => {
+    save.disabled = discard.disabled = true;
+    try {
+      const res = await api(`/entries/${r.pendingId}/confirm`, { method: "POST" });
+      el.classList.add("saved");
+      el.querySelector("h3").textContent = `Saved for ${who}`;
+      el.querySelector(".actions").innerHTML = `<button class="btn" type="button">Undo</button><span class="hint">Undo is available for 15 minutes.</span>`;
+      const undo = el.querySelector(".actions button");
+      const timer = setTimeout(() => undo.remove(), new Date(res.undoUntil) - Date.now());
+      undo.onclick = async () => {
+        undo.disabled = true;
+        try { await api(`/entries/${r.pendingId}/undo`, { method: "POST" }); clearTimeout(timer);
+              el.classList.remove("saved"); el.classList.add("closed"); el.querySelector("h3").textContent = "Undone. Nothing was kept.";
+              el.querySelector(".actions").remove(); refreshSnapshot(); }
+        catch (err) { undo.disabled = false; add(esc(err.message), "msg bot error"); }
+      };
+      remember("Saved."); refreshSnapshot();
+    } catch (err) { save.disabled = discard.disabled = false; add(esc(err.message), "msg bot error"); }
+  };
+  discard.onclick = async () => {
+    await api(`/entries/${r.pendingId}/discard`, { method: "POST" }).catch(() => {});
+    el.classList.add("closed"); el.querySelector("h3").textContent = "Discarded"; el.querySelector(".actions").remove();
+    remember("Discarded.");
+  };
+}
+
+// ───── activity (audit trail) ─────
+const ACTIONS = { create: "Added", update: "Changed", delete: "Removed", read: "Viewed", ai_query: "Asked", entry_proposed: "Drafted", entry_confirmed: "Saved", entry_discarded: "Discarded", entry_undone: "Undid" };
+const ACTIVITY_FIELDS = {
+  members: { full_name: "Name", preferred_name: "Preferred name", date_of_birth: "Date of birth", sex: "Sex", blood_type: "Blood type", eye_color: "Eye color" },
+  allergies: { substance: "Allergen", reaction: "Reaction", severity: "Severity", noted_on: "Noted on", status: "Status" },
+  medications: { name: "Medication", dose_value: "Dose", dose_unit: "Dose unit", route: "Route", frequency: "Frequency", prescriber: "Prescriber", reason: "Reason", start_date: "Start date", end_date: "End date", stop_reason: "Stop reason", status: "Status" },
+  vitals: { vital_type: "Measurement", original_value: "Value", original_unit: "Unit", measured_at: "Measured at" },
+  appointments: { starts_at: "When", provider_name: "Provider", specialty: "Specialty", location: "Location", reason: "Reason", status: "Status", outcome_notes: "Outcome" },
+};
+function activityDetails(r) {
+  const fields = ACTIVITY_FIELDS[r.entity];
+  const format = (value) => value == null || value === "" ? "Not set" : String(value);
+  if (fields && ["create", "update", "delete"].includes(r.action)) {
+    const before = r.before ?? {}, after = r.after ?? {};
+    const record = r.action === "delete" ? before : after;
+    const lines = Object.entries(fields).flatMap(([key, label]) => {
+      if (r.action === "update") {
+        if (before[key] === after[key]) return [];
+        return [`<div><strong>${esc(label)}:</strong> ${esc(format(before[key]))} → ${esc(format(after[key]))}</div>`];
+      }
+      if (record[key] == null || record[key] === "") return [];
+      return [`<div><strong>${esc(label)}:</strong> ${esc(format(record[key]))}</div>`];
+    });
+    // Identify an updated record even when its name itself did not change.
+    if (r.action === "update") {
+      const name = after.substance ?? after.name ?? after.full_name ?? after.vital_type ?? after.provider_name;
+      if (name) lines.unshift(`<div><strong>${esc(name)}</strong></div>`);
+    }
+    return lines.join("") || "No data fields changed";
+  }
+  if (r.action === "entry_proposed") {
+    return (r.details?.proposals ?? []).map((p) => `<div>${esc(p.display)}</div>`).join("");
+  }
+  if (r.action === "entry_confirmed" && Array.isArray(r.details?.records)) {
+    const count = r.details.records.length;
+    return `${count} record${count === 1 ? "" : "s"} saved`;
+  }
+  return "";
+}
+$("openActivity").onclick = async () => {
+  $("activity").showModal();
+  $("activityRows").innerHTML = `<tr><td colspan="5">Loading…</td></tr>`;
+  try {
+    const rows = await api("/audit?limit=200");
+    const me = state.me.user;
+    $("activityRows").innerHTML = rows.map((r) => `<tr>
+      <td>${esc(new Date(r.at).toLocaleString())}</td>
+      <td>${r.actor === me.id ? "You" : r.actor ? "Household member" : "System"}</td>
+      <td>${esc(ACTIONS[r.action] ?? r.action)}${r.action === "ai_query" && r.details?.question ? `: “${esc(r.details.question)}”` : ""}</td>
+      <td>${esc(r.entity.replace(/_/g, " "))}${r.memberId ? `<span class="activity-member">${esc(state.me.members.find((m) => m.id === r.memberId)?.name ?? "Household member")}</span>` : ""}</td>
+      <td class="activity-details">${activityDetails(r)}</td></tr>`).join("") || `<tr><td colspan="5">No activity yet.</td></tr>`;
+  } catch (err) { $("activityRows").innerHTML = `<tr><td colspan="5" class="error">${esc(err.message)}</td></tr>`; }
+};
+$("closeActivity").onclick = () => $("activity").close();
+
+// ───── start ─────
+if (state.email) boot().catch(() => { $("signin").hidden = false; });
+else $("signin").hidden = false;
+</script>
+</body>
+</html>
