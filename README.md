@@ -26,6 +26,12 @@ Then choose **Add member** to enter each person's name and optional profile deta
 preferred name, sex, blood type, and eye color). Owners and editors can add members; viewers cannot.
 Member additions are recorded in Activity automatically. No seed script is required.
 
+Choose **Records** to edit or delete a member's profile, allergies, medications, measurements,
+and appointments at any time, including older and inactive records. Owners and editors can make
+changes; viewers can read. Deleting removes a record from the active views and preserves its audit
+history. Undo has no time limit; if a record has since been edited, use Records to change its current
+version instead of undoing an older entry.
+
 Existing households keep their members and health records. Run `npm run db:migrate` to apply the
 onboarding migration, sign in with your existing email, and use **Add member** for more profiles.
 
@@ -68,4 +74,24 @@ Self-host Langfuse if prompts with real data will be traced.
   `src/lib/auth.ts` with a real identity provider; everything else depends only on `request.tenant`.
 - **OpenAI:** review your API data-retention settings before sending real data.
 - **Prompts:** tuned without live model access; expect to adjust `understandPrompt` and `ANSWER_PROMPT`.
-- **pgvector:** installed but unused until documents arrive.
+- **pgvector:** stores 1536-dimensional embeddings of reviewed lab results, with exact cosine search scoped to the selected household member.
+
+## Lab reports
+
+Select a member and open **Reports → Add report**. Upload a PDF, PNG, JPEG or WebP up to 10 MB, or paste text up to 100,000 characters. Files and pasted text go to the configured OpenAI model for extraction. Originals, extracted drafts and reviewed results are stored in PostgreSQL. Check the patient name, dates, all values, units, printed ranges and flags against **Download original**, then choose **Save and make searchable**. Drafts remain available for later review and are excluded from chat search.
+
+Ask questions in chat, for example “What was my latest LDL?” or “How has my cholesterol changed?” Lab answers include clickable source reports. Latest-report questions fetch all reviewed tests from the latest saved report directly, without guessed date windows or chunk limits. Semantic search returns ranked excerpts; the separate history tool fetches complete reviewed results from up to 20 reports and signals truncation. Report dates must use years between 1900 and 2100. This is a record lookup, not a diagnosis or treatment recommendation. Overall health report generation is deferred.
+
+Reports can be edited or deleted at any time. Edits atomically replace their embeddings; deleted reports disappear from search and downloads, while activity history is retained. Failed embedding calls leave the previous version or draft intact so you can retry. Conflicting saves require reopening the current version. Viewers can read and download, while owners and editors can upload and change reports.
+
+Run `npm run db:migrate` to apply `0004_lab_reports.sql`. `OPENAI_LAB_MODEL` defaults to `OPENAI_MODEL`; `OPENAI_EMBEDDING_MODEL` defaults to `text-embedding-3-small`. Embeddings must support 1536 dimensions. After changing the embedding model, reopen and save existing reports to rebuild their index; search excludes embeddings produced by a different model.
+
+## Surgery, discharge, recommendations and other reports
+
+Use **Reports → Add report** for surgery/operative reports, discharge summaries, recommendations, or miscellaneous health documents. The app detects the category, or you can choose it explicitly. The same PDF/image/pasted-text inputs are supported. Review the title, date, facility/author, patient and narrative sections, then save to index the reviewed content. Any laboratory tests printed in the document remain available as test rows.
+
+Original documents and transcripts stay in PostgreSQL. Narrative sections are indexed in overlapping chunks, and saved edits atomically rebuild the index. Chat can search all report categories or fetch full documents, including the latest document in a specific category. Try “What follow-up did the discharge report recommend?” or “What procedure is documented in my latest surgery report?” Answers cite the source and treat recommendations as dated statements from the document, not new clinical advice or proof of current medications.
+
+Migration `0005_miscellaneous_reports.sql` adds categories and narrative sections without changing existing lab report IDs, source files, or indexes. The original `/labs` API remains compatible; `/reports` provides the general report endpoints. Reports remain editable and deletable at any time.
+
+Migration `0006_rename_report_tables.sql` renames the storage tables to `reports` and `report_chunks`. Existing originals, reviewed content, embeddings, IDs and tenant policies are preserved. New activity events use `reports`; historical events retain their original entity name to preserve the audit hash chain.

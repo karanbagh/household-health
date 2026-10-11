@@ -11,15 +11,13 @@ import { commitProposals, undoRecords, EntryConflict, type CreatedRecord, type H
 import { runChat, type MemberRef } from "../agent/graph.js";
 import { traceHandler } from "../agent/llm.js";
 
-const UNDO_WINDOW_MS = 15 * 60_000;
-
-async function loadHousehold(db: Db): Promise<{ hh: Household; members: MemberRef[] }> {
+async function loadHousehold(db: Db): Promise<{ hh: Household & { name: string }; members: MemberRef[] }> {
   const [h] = await db.select().from(households); // RLS returns only the caller's household
   if (!h) throw new Error("Household not found");
   const ms = await db.select({ id: members.id, fullName: members.fullName, preferredName: members.preferredName, dateOfBirth: members.dateOfBirth })
     .from(members).where(isNull(members.deletedAt)).orderBy(asc(members.createdAt));
   return {
-    hh: { id: h.id, timezone: h.timezone, unitSystem: h.unitSystem },
+    hh: { id: h.id, name: h.name, timezone: h.timezone, unitSystem: h.unitSystem },
     members: ms.map((m) => ({ id: m.id, name: m.preferredName ?? m.fullName, dateOfBirth: m.dateOfBirth })),
   };
 }
@@ -94,7 +92,7 @@ export async function apiRoutes(app: FastifyInstance) {
         const created = await commitProposals(db, p.memberId, ctx.userId, ctx.householdId, p.sourceText, p.proposals as Proposal[]);
         await db.update(pendingEntries).set({ status: "confirmed", createdRecords: created, resolvedAt: new Date() }).where(eq(pendingEntries.id, p.id));
         await audit(db, { ...ctx, traceId: p.traceId }, { action: "entry_confirmed", entity: "pending_entries", entityId: p.id, memberId: p.memberId, details: { records: created } });
-        return { status: "confirmed", records: created.length, undoUntil: new Date(Date.now() + UNDO_WINDOW_MS).toISOString() };
+        return { status: "confirmed", records: created.length };
       });
     } catch (err) {
       if (err instanceof EntryConflict) return reply.code(409).send({ error: err.message });
@@ -120,8 +118,16 @@ export async function apiRoutes(app: FastifyInstance) {
       const [p] = await db.select().from(pendingEntries).where(eq(pendingEntries.id, req.params.id)).for("update");
       if (!p || p.status !== "confirmed") return reply.code(409).send({ error: "Only saved entries can be undone" });
       if (p.createdBy !== ctx.userId && ctx.role !== "owner") return reply.code(403).send({ error: "Only the person who saved this can undo it" });
-      if (!p.resolvedAt || Date.now() - p.resolvedAt.getTime() > UNDO_WINDOW_MS) return reply.code(409).send({ error: "The undo window has passed. Ask me to correct it instead." });
-      await undoRecords(db, (p.createdRecords ?? []) as CreatedRecord[]);
+      const records = (p.createdRecords ?? []) as CreatedRecord[];
+      for (const record of records) {
+        if (!["members", "medications", "allergies", "vitals", "appointments"].includes(record.table)) continue;
+        await db.execute(sql`select id from ${sql.identifier(record.table)} where id = ${record.id} for update`);
+        const newer = await db.execute(sql`select 1 from audit_log changed join audit_log saved on saved.entity_id = ${p.id}
+          and saved.action = 'entry_confirmed' where changed.entity_id = ${record.id}
+          and changed.action in ('update', 'delete') and changed.id > saved.id limit 1`);
+        if (newer.rows.length) return reply.code(409).send({ error: "This record has changed since it was saved. Use Records to edit or delete its current version." });
+      }
+      await undoRecords(db, records);
       await db.update(pendingEntries).set({ status: "undone" }).where(eq(pendingEntries.id, p.id));
       await audit(db, ctx, { action: "entry_undone", entity: "pending_entries", entityId: p.id, memberId: p.memberId });
       return { status: "undone" };

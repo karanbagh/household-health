@@ -12,8 +12,14 @@ const vital = z.object({
   measured_at_local: z.string().nullable().describe("Household-local 'YYYY-MM-DDTHH:mm' if the parent said when; null means now."),
 });
 
+const medicationName = {
+  name: z.string().describe("Medication name with correct spelling when the intended medicine is clear. Preserve valid brand names; do not substitute a different medicine. If uncertain, keep the name as written and mark name_resolution uncertain."),
+  original_name: z.string().describe("Medication name exactly as written by the user, before spelling correction; exclude dose and frequency."),
+  name_resolution: z.enum(["exact", "corrected", "uncertain"]).describe("exact: name needs no correction. corrected: a clear spelling error or unambiguous abbreviation was corrected. uncertain: the name might mean different medicines or cannot be confidently identified; ask the user."),
+};
+
 const medicationStart = z.object({
-  name: z.string(),
+  ...medicationName,
   dose_value: z.number().nullable(),
   dose_unit: z.string().nullable().describe("mg, ml, puffs, tablets…"),
   route: z.string().nullable().describe("oral, inhaled, topical…"),
@@ -25,7 +31,7 @@ const medicationStart = z.object({
 });
 
 const medicationStop = z.object({
-  name: z.string().describe("The medication being stopped, as the parent named it"),
+  ...medicationName,
   end_date: z.string().nullable().describe("YYYY-MM-DD, null means today"),
   stop_reason: z.string().nullable(),
 });

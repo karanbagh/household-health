@@ -1,6 +1,7 @@
 import { tool } from "@langchain/core/tools";
 import { z } from "zod";
-import { and, asc, desc, eq, gte, isNull, lt, lte, inArray } from "drizzle-orm";
+import { and, asc, desc, eq, gte, isNull, lt, lte, inArray, sql } from "drizzle-orm";
+import { searchLabs, LAB_COLUMNS, toLabReport, type StoredLab, type LabServices, ReportTypeSchema } from "../domain/labs.js";
 import { withTenant, type TenantContext } from "../db/client.js";
 import { allergies, appointments, medications, members, vitals } from "../db/schema.js";
 import { VITAL_INPUT_TYPES, VITALS, formatDelta, formatVital, type VitalStoredType } from "../domain/vitals.js";
@@ -15,11 +16,13 @@ export interface ToolCallLog { tool: string; args: unknown; recordIds: string[] 
  * Tools are created per request. Household and member come from the closure (the authenticated
  * session and the resolved member), never from model arguments, so the model cannot reach another tenant.
  */
-export function buildReadTools(ctx: TenantContext, hh: Household, memberId: string) {
+export function buildReadTools(ctx: TenantContext, hh: Household, memberId: string, labServices?: LabServices) {
   const sources: Source[] = [];
   const calls: ToolCallLog[] = [];
   const track = (name: string, args: unknown, found: Source[]) => {
-    sources.push(...found.filter((s) => !sources.some((x) => x.id === s.id)));
+    for (const source of found) {
+      if (!sources.some((existing) => existing.table === source.table && existing.id === source.id)) sources.push(source);
+    }
     calls.push({ tool: name, args, recordIds: found.map((s) => s.id) });
   };
   const when = (d: Date, withTime = true) => formatLocal(d, hh.timezone, withTime);
@@ -111,5 +114,44 @@ export function buildReadTools(ctx: TenantContext, hh: Household, memberId: stri
     schema: z.object({ when: z.enum(["upcoming", "past", "all"]), limit: z.number().int().min(1).max(50) }),
   });
 
-  return { tools: [getProfile, getAllergies, getMedications, getVitals, getAppointments], getVitals, sources, calls };
+  const searchLabResults = tool(async ({ query, from_date, to_date }) => {
+    const hits = await searchLabs(ctx, memberId, query, { fromDate: from_date, toDate: to_date }, labServices);
+    track("search_lab_results", { query, from_date, to_date }, hits.map((r) => ({ table: "reports", id: r.reportId, label: `${r.title} (${r.reportDate ?? "date not printed"})` })));
+    return JSON.stringify({ matches: hits, note: "Ranked excerpts, not an exhaustive history. Use get_lab_reports for comparisons or all results. Empty matches mean no searchable reports for this period." });
+  }, { name: "search_lab_results", description: "Semantic search of reviewed lab results, including synonyms. Use for questions about laboratory tests and findings.", schema: z.object({ query: z.string().min(1).max(2000), from_date: z.iso.date().nullable(), to_date: z.iso.date().nullable() }) });
+  const getLabReports = tool(async ({ from_date, to_date }) => {
+    const rows = await withTenant(ctx, (db) => db.execute<StoredLab>(sql`select ${LAB_COLUMNS} from reports where member_id=${memberId} and deleted_at is null and status='confirmed' and report_type='lab'
+      and exists(select 1 from members m where m.id=member_id and m.deleted_at is null)
+      ${from_date ? sql`and report_date >= ${from_date}::date` : sql``}
+      ${to_date ? sql`and report_date <= ${to_date}::date` : sql``}
+      order by report_date desc nulls last, created_at desc limit 21`));
+    const reports = rows.rows.slice(0, 20).map(toLabReport);
+    track("get_lab_reports", { from_date, to_date }, reports.map((r) => ({ table: "reports", id: r.id, label: `${r.data.title} (${r.data.reportDate ?? "date not printed"})` })));
+    return JSON.stringify({ reports, truncated: rows.rows.length > 20, note: "Up to 20 most recent reports. Narrow the dates if truncated. Compare only compatible tests and units; do not infer absent flags or reference ranges." });
+  }, { name: "get_lab_reports", description: "Reviewed structured lab reports for complete results and comparisons over time. Returns up to 20 reports, with an explicit truncation indicator.", schema: z.object({ from_date: z.iso.date().nullable(), to_date: z.iso.date().nullable() }) });
+  const getLatestLabReport = tool(async () => {
+    const rows = await withTenant(ctx, (db) => db.execute<StoredLab>(sql`select ${LAB_COLUMNS} from reports where member_id=${memberId} and deleted_at is null and status='confirmed' and report_type='lab'
+      and exists(select 1 from members m where m.id=member_id and m.deleted_at is null)
+      order by report_date desc nulls last, created_at desc, id desc limit 1`));
+    const report = rows.rows[0] ? toLabReport(rows.rows[0]) : null;
+    track("get_latest_lab_report", {}, report ? [{ table: "reports", id: report.id, label: `${report.data.title} (${report.data.reportDate ?? "date not printed"})` }] : []);
+    return JSON.stringify({ report, note: "Complete reviewed results from the latest saved report. No date window or semantic top-k filter is applied. Missing results here mean absent from this report, not from all report history." });
+  }, { name: "get_latest_lab_report", description: "Fetch the latest saved lab report with ALL reviewed test results, including HDL. Use for latest-report questions; no guessed date filters.", schema: z.object({}) });
+  const searchReports = tool(async ({ query, report_type, from_date, to_date }) => {
+    const hits = await searchLabs(ctx, memberId, query, { reportType: report_type === "all" ? null : report_type, fromDate: from_date, toDate: to_date }, labServices);
+    track("search_reports", { query, report_type, from_date, to_date }, hits.map(r => ({ table: "reports", id: r.reportId, label: `${r.title} (${r.reportDate ?? "date not printed"})` })));
+    return JSON.stringify({ matches: hits, note: "Ranked excerpts from reviewed reports, not exhaustive history. Quote recommendations as documented with report dates; do not present them as your own advice or current medication status. Use get_reports for full narrative context." });
+  }, { name: "search_reports", description: "Semantic search across surgery reports, discharge summaries, recommendations, miscellaneous documents and labs. Use for questions about documented procedures, findings, instructions and follow-up.", schema: z.object({ query: z.string().min(1).max(2000), report_type: z.enum(["all", ...ReportTypeSchema.options]), from_date: z.iso.date().nullable(), to_date: z.iso.date().nullable() }) });
+  const getReports = tool(async ({ report_type, latest, from_date, to_date }) => {
+    const rows = await withTenant(ctx, db => db.execute<StoredLab>(sql`select ${LAB_COLUMNS} from reports where member_id=${memberId} and deleted_at is null and status='confirmed'
+      and exists(select 1 from members m where m.id=member_id and m.deleted_at is null)
+      ${report_type === "all" ? sql`` : sql`and report_type=${report_type}`}
+      ${from_date ? sql`and report_date >= ${from_date}::date` : sql``}
+      ${to_date ? sql`and report_date <= ${to_date}::date` : sql``}
+      order by report_date desc nulls last, created_at desc, id desc limit ${latest ? 1 : 21}`));
+    const reports = rows.rows.slice(0, 20).map(toLabReport);
+    track("get_reports", { report_type, latest, from_date, to_date }, reports.map(r => ({ table: "reports", id: r.id, label: `${r.data.title} (${r.data.reportDate ?? "date not printed"})` })));
+    return JSON.stringify({ reports, truncated: rows.rows.length > 20, note: "Full reviewed text and results. Preserve attribution and dates for documented diagnoses and recommendations. Empty date-filtered results do not imply no reports exist." });
+  }, { name: "get_reports", description: "Complete reviewed reports and narrative sections. Filter by category; latest=true fetches the latest saved report in that category. Leave dates null unless the user specifies a period.", schema: z.object({ report_type: z.enum(["all", ...ReportTypeSchema.options]), latest: z.boolean(), from_date: z.iso.date().nullable(), to_date: z.iso.date().nullable() }) });
+  return { tools: [getProfile, getAllergies, getMedications, getVitals, getAppointments, searchLabResults, getLabReports, getLatestLabReport, searchReports, getReports], getReports, getLatestLabReport, getVitals, sources, calls };
 }

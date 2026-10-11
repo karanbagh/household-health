@@ -30,7 +30,7 @@ const vitalItem = (value: number, unit: string | null): ExtractedItem => ({
 });
 const medItem = (name: string): ExtractedItem => ({
   kind: "medication_start", vital: null, medication_stop: null, allergy: null, appointment: null, profile_update: null,
-  medication_start: { name, dose_value: 250, dose_unit: "mg", route: "oral", frequency: "twice daily", prescriber: null, reason: null, start_date: "2026-10-01", end_date: null },
+  medication_start: { name, original_name: name, name_resolution: "exact", dose_value: 250, dose_unit: "mg", route: "oral", frequency: "twice daily", prescriber: null, reason: null, start_date: "2026-10-01", end_date: null },
 });
 
 /** Drizzle wraps driver errors; the Postgres message is on .cause. */
@@ -93,7 +93,7 @@ test("entry → confirm → undo, with every change in the audit trail", async (
 test("stopping a medication finds it by name and records the stop", async () => {
   await withTenant(A, async (db) => commitProposals(db, memberA, A.userId, A.householdId, "started cetirizine",
     (await buildProposals(db, hh, memberA, [medItem("Cetirizine")])).proposals));
-  const stop: ExtractedItem = { kind: "medication_stop", medication_stop: { name: "cetirizine", end_date: null, stop_reason: "allergy season over" },
+  const stop: ExtractedItem = { kind: "medication_stop", medication_stop: { name: "cetirizine", original_name: "cetirizine", name_resolution: "exact", end_date: null, stop_reason: "allergy season over" },
     vital: null, medication_start: null, allergy: null, appointment: null, profile_update: null };
   const { proposals, issues } = await withTenant(A, (db) => buildProposals(db, hh, memberA, [stop]));
   assert.deepEqual(issues, []);
@@ -107,6 +107,43 @@ test("ambiguous input produces a question, not a record", async () => {
   const { proposals, issues } = await withTenant(A, (db) => buildProposals(db, hh, memberA, [vitalItem(700, "kg")]));
   assert.equal(proposals.length, 0);
   assert.equal(issues.length, 1);
+});
+
+test("corrected medication spelling is shown, saved with original text, and used for stopping", async () => {
+  const item = medItem("rosuvastatin");
+  item.medication_start!.original_name = "rosuvast";
+  item.medication_start!.name_resolution = "corrected";
+  item.medication_start!.dose_value = 10;
+  const source = "Test Kid is on rosuvast 10mg";
+  const { proposals, issues } = await withTenant(A, (db) => buildProposals(db, hh, memberA, [item]));
+  assert.deepEqual(issues, []);
+  assert.match(proposals[0]!.display, /rosuvastatin, 10 mg/);
+  assert.ok(proposals[0]!.assumptions.some((text) => text.includes('"rosuvast" → "rosuvastatin"')));
+  await withTenant(A, (db) => commitProposals(db, memberA, A.userId, A.householdId, source, proposals));
+  const [saved] = await withTenant(A, (db) => db.select().from(medications).where(eq(medications.name, "rosuvastatin")));
+  assert.equal(saved!.doseValue, 10);
+  assert.equal(saved!.sourceText, source);
+  const stop: ExtractedItem = { ...item, kind: "medication_stop", medication_start: null, medication_stop: {
+    name: "rosuvastatin", original_name: "rosuvast", name_resolution: "corrected", end_date: null, stop_reason: null,
+  } };
+  const result = await withTenant(A, (db) => buildProposals(db, hh, memberA, [stop]));
+  assert.deepEqual(result.issues, []);
+  assert.equal(result.proposals[0]!.kind, "medication_stop");
+  assert.ok(result.proposals[0]!.assumptions.some((text) => text.includes('"rosuvast" → "rosuvastatin"')));
+});
+
+test("uncertain medication names require clarification for starts and stops", async () => {
+  const start = medItem("unknown medicine");
+  start.medication_start!.original_name = "unclear";
+  start.medication_start!.name_resolution = "uncertain";
+  const stop: ExtractedItem = { ...start, kind: "medication_stop", medication_start: null, medication_stop: {
+    name: "unknown medicine", original_name: "unclear", name_resolution: "uncertain", end_date: null, stop_reason: null,
+  } };
+  for (const item of [start, stop]) {
+    const { proposals, issues } = await withTenant(A, (db) => buildProposals(db, hh, memberA, [item]));
+    assert.equal(proposals.length, 0);
+    assert.match(issues[0]!, /exact medication name on the label/);
+  }
 });
 
 test("read tools are scoped to the session and log what they returned", async () => {

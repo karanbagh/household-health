@@ -1,6 +1,6 @@
 // Typed mirror of db/migrations/0001_init.sql. The SQL file is the source of truth for
 // RLS policies, triggers and grants; keep column definitions here in sync with it.
-import { pgTable, uuid, text, date, timestamp, numeric, jsonb, bigserial } from "drizzle-orm/pg-core";
+import { pgTable, uuid, text, date, timestamp, numeric, jsonb, bigserial, integer, customType, vector } from "drizzle-orm/pg-core";
 
 const ts = (name: string) => timestamp(name, { withTimezone: true, mode: "date" });
 
@@ -126,4 +126,22 @@ export const auditLog = pgTable("audit_log", {
   details: jsonb("details"),
   requestId: text("request_id"),
   traceId: text("trace_id"),
+});
+
+// Report originals and the index of reviewed content (0004 through 0006 migrations).
+const bytea = customType<{ data: Buffer; driverData: Buffer }>({ dataType: () => "bytea" });
+export const reports = pgTable("reports", {
+  reportType: text("report_type").$type<import("../domain/labs.js").ReportType>().notNull(),
+  sections: jsonb("sections").$type<{ heading: string; text: string }[]>().notNull(),
+  id: uuid("id").primaryKey().defaultRandom(), householdId: uuid("household_id").notNull(), memberId: uuid("member_id").notNull(),
+  title: text("title").notNull(), reportDate: date("report_date"), labName: text("lab_name"), patientName: text("patient_name"),
+  originalText: text("original_text").notNull(), fileName: text("file_name"), fileMime: text("file_mime"), fileData: bytea("file_data"), contentHash: text("content_hash").notNull(),
+  results: jsonb("results").$type<import("../domain/labs.js").LabData["results"]>().notNull(), notes: text("notes").notNull(), warnings: jsonb("warnings").$type<string[]>().notNull(),
+  status: text("status").$type<"draft" | "confirmed">().notNull(), revision: integer("revision").notNull(),
+  createdAt: ts("created_at").notNull(), updatedAt: ts("updated_at").notNull(), createdBy: uuid("created_by"), deletedAt: ts("deleted_at"),
+});
+export const reportChunks = pgTable("report_chunks", {
+  id: uuid("id").primaryKey().defaultRandom(), householdId: uuid("household_id").notNull(), memberId: uuid("member_id").notNull(), reportId: uuid("report_id").notNull(),
+  revision: integer("revision").notNull(), chunkNo: integer("chunk_no").notNull(), content: text("content").notNull(),
+  embedding: vector("embedding", { dimensions: 1536 }).notNull(), embeddingModel: text("embedding_model").notNull(),
 });

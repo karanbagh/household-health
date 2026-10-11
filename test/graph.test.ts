@@ -10,6 +10,7 @@ import { eq } from "drizzle-orm";
 import { runChat } from "../src/agent/graph.js";
 import { commitProposals, undoRecords, type Proposal } from "../src/domain/entries.js";
 import { buildReadTools } from "../src/agent/tools.js";
+import type { LabData } from "../src/domain/labs.js";
 import { understandSchema } from "../src/agent/schemas.js";
 
 const admin = new pg.Client({ connectionString: process.env.DATABASE_ADMIN_URL });
@@ -113,4 +114,37 @@ test("eye color becomes a profile proposal, is saved and readable, and can be un
   await withTenant(requestCtx, (db) => undoRecords(db, created));
   const [restored] = await withTenant(ctx, (db) => db.select().from(memberTable).where(eq(memberTable.id, memberId)));
   assert.equal(restored!.eyeColor, null);
+});
+
+test("latest lab questions preload every test without guessed date windows or chunk limits", async () => {
+  const results: LabData["results"] = Array.from({ length: 30 }, (_, index) => ({ testName: `Test ${index}`, value: "1", unit: null, referenceRange: null, flag: "not_reported", sourceExcerpt: "test fixture" }));
+  results.push({ testName: "HDL cholesterol", value: "55", unit: "mg/dL", referenceRange: ">40", flag: "not_reported", sourceExcerpt: "HDL 55 mg/dL reference >40" });
+  const inserted = await admin.query<{ id: string }>(`insert into reports(household_id,member_id,title,report_date,original_text,content_hash,results,status)
+    values($1,$2,'Legacy lab report','2020-10-11','Synthetic source','synthetic',$3::jsonb,'confirmed') returning id`, [ctx.householdId, memberId, JSON.stringify(results)]);
+  await admin.query(`insert into reports(household_id,member_id,title,report_date,original_text,content_hash,results,status)
+    values($1,$2,'Newer unsaved draft','2026-10-11','Synthetic source','synthetic','[]','draft')`, [ctx.householdId, memberId]);
+  const { model, seen } = scriptedModel([{ intent: "question", member_id: memberId, question: "Is HDL in range in the latest lab report?", items: [] }], [new AIMessage("HDL cholesterol is recorded in the latest saved report.")]);
+  const result = await runChat({ ctx: { ...ctx, requestId: randomUUID() }, hh, members: members(), defaultMemberId: memberId, message: "is good cholestrol in range in the latest lab report", history: [], callbacks: [], model });
+  assert.equal(result.type, "answer");
+  if (result.type !== "answer") return;
+  assert.deepEqual(result.sources.map(source => source.id), [inserted.rows[0]!.id]);
+  const toolMessage = seen[0]!.find(message => message.getType() === "tool");
+  assert.ok(toolMessage, "Latest report must be fetched before the model answers");
+  const content = JSON.parse(String(toolMessage.content)) as { report: { data: { reportDate: string; results: { testName: string }[] } } };
+  assert.equal(content.report.data.reportDate, "2020-10-11");
+  assert.equal(content.report.data.results.length, 31);
+  assert.equal(content.report.data.results.at(-1)!.testName, "HDL cholesterol");
+});
+
+test("latest discharge questions preload the complete discharge document rather than the lab report", async () => {
+  const sections = [{ heading: "Follow-up", text: "Synthetic discharge instructions recommend a follow-up visit in two weeks." }];
+  const inserted = await admin.query<{ id: string }>(`insert into reports(household_id,member_id,title,report_type,report_date,original_text,content_hash,results,sections,status)
+    values($1,$2,'Synthetic discharge summary','discharge','2026-10-11','Synthetic source','synthetic','[]',$3::jsonb,'confirmed') returning id`, [ctx.householdId, memberId, JSON.stringify(sections)]);
+  const { model, seen } = scriptedModel([{ intent: "question", member_id: memberId, question: "What follow-up did the latest discharge report recommend?", items: [] }], [new AIMessage("The discharge report documents follow-up in two weeks.")]);
+  const result = await runChat({ ctx: { ...ctx, requestId: randomUUID() }, hh, members: members(), defaultMemberId: memberId, message: "What follow-up did the latest discharge report recommend?", history: [], callbacks: [], model });
+  assert.equal(result.type, "answer"); if (result.type !== "answer") return;
+  assert.deepEqual(result.sources.map(source => source.id), [inserted.rows[0]!.id]);
+  const message = seen[0]!.find(message => message.getType() === "tool"); assert.ok(message);
+  const data = JSON.parse(String(message.content)) as { reports: { data: { reportType: string; sections: { text: string }[] } }[] };
+  assert.equal(data.reports.length, 1); assert.equal(data.reports[0]!.data.reportType, "discharge"); assert.match(data.reports[0]!.data.sections[0]!.text, /two weeks/);
 });

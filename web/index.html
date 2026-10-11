@@ -31,7 +31,8 @@
   .app { display: grid; grid-template-columns: 340px 1fr; height: 100%; }
   .snapshot { border-right: 1px solid var(--line); overflow-y: auto; padding: 20px 22px 32px; background: var(--sheet); }
   .main { display: grid; grid-template-rows: auto 1fr auto; min-height: 0; }
-  header { display: flex; align-items: center; gap: 12px; padding: 12px 20px; border-bottom: 1px solid var(--line); }
+  header { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; padding: 12px 20px; border-bottom: 1px solid var(--line); }
+  .household-title { flex-basis: 100%; margin: 0; font-size: 20px; font-weight: 700; overflow-wrap: anywhere; }
   .who { display: flex; gap: 6px; flex-wrap: wrap; }
   .who button { border: 1px solid var(--line); background: transparent; border-radius: 999px; padding: 4px 14px; }
   .who button[aria-pressed="true"] { background: var(--ink); color: var(--paper); border-color: var(--ink); }
@@ -57,6 +58,8 @@
   .log-inner { max-width: 720px; margin: 0 auto; display: flex; flex-direction: column; gap: 14px; }
   .msg { max-width: 90%; }
   .msg.user { align-self: flex-end; background: var(--pen-wash); color: var(--ink); padding: 10px 14px; border-radius: var(--r-lg) var(--r-lg) 4px var(--r-lg); white-space: pre-wrap; }
+  .msg.user .rerun { display: block; margin: 6px 0 0 auto; font-size: 14px; color: var(--pen); }
+  .rerun:disabled { opacity: .5; cursor: default; }
   .msg.bot { align-self: flex-start; }
   .msg.bot p { margin: 0 0 8px; } .msg.bot p:last-child { margin: 0; }
   .msg.bot ul { margin: 4px 0 8px; padding-left: 20px; }
@@ -119,6 +122,19 @@
   .profile-form label { display: block; margin-bottom: 12px; }
   .profile-form input, .profile-form select { display: block; width: 100%; padding: 9px 12px; border: 1px solid var(--line); border-radius: var(--r-sm); background: var(--sheet); }
   .profile-form .actions { display: flex; gap: 10px; }
+  #recordsBody { padding: 20px; }
+  .record-item { border-bottom: 1px solid var(--line); padding: 12px 0; }
+  .record-item p { margin: 4px 0; color: var(--muted); font-size: 15px; }
+  .record-item .actions { display: flex; gap: 12px; }
+  #recordEditForm { padding: 16px 0; max-width: 480px; }
+
+  #labsBody label { display: block; margin: 12px 0; }
+  #labsBody input, #labsBody textarea, #labsBody select { color: var(--ink); background: var(--sheet); border: 1px solid var(--line); border-radius: var(--r-sm); padding: 8px; font: inherit; }
+  #labsBody label input { display: block; width: 100%; }
+  #labResults input { width: 100%; min-width: 100px; }
+  #labResults td:first-child { min-width: 180px; }
+  #labResults details { font-size: 13px; max-width: 220px; overflow-wrap: anywhere; }
+  .lab-metadata { display: grid; grid-template-columns: repeat(auto-fit,minmax(180px,1fr)); gap: 12px; }
 
   @media (max-width: 860px) {
     .app { grid-template-columns: 1fr; }
@@ -162,11 +178,14 @@
 
   <section class="main">
     <header>
+      <h1 class="household-title" id="householdTitle"></h1>
       <div class="who" id="who" role="group" aria-label="Who is this about"></div>
       <button class="linkish" id="addMember" type="button" hidden>Add member</button>
       <span class="spacer"></span>
       <button class="linkish show-snapshot" id="openSnapshot" type="button">Snapshot</button>
       <button class="linkish" id="openActivity" type="button" hidden>Activity</button>
+      <button class="linkish" id="openLabs" type="button">Reports</button>
+      <button class="linkish" id="openRecords" type="button">Records</button>
       <button class="linkish" id="signout" type="button">Sign out</button>
     </header>
 
@@ -201,9 +220,16 @@
   <div class="table-wrap"><table><thead><tr><th>When</th><th>Who</th><th>What</th><th>Record</th><th>Details</th></tr></thead><tbody id="activityRows"></tbody></table></div>
 </dialog>
 
+<dialog id="recordsDialog" aria-labelledby="recordsTitle">
+  <div class="head"><h2 id="recordsTitle">Records</h2><button class="linkish" id="closeRecords" type="button">Close</button></div>
+  <div id="recordsBody"></div>
+</dialog>
+
+<dialog id="labsDialog" aria-labelledby="labsTitle"><div class="head"><h2 id="labsTitle">Reports</h2><button class="linkish" id="closeLabs" type="button">Close</button></div><div id="labsBody" style="padding:20px"></div></dialog>
 <script>
 const $ = (id) => document.getElementById(id);
 const state = { email: localStorage.getItem("hh.email"), me: null, memberId: null, history: [], conversationId: crypto.randomUUID() };
+let chatBusy = false;
 
 async function api(path, opts = {}) {
   const res = await fetch("/api" + path, {
@@ -274,10 +300,14 @@ async function boot() {
 }
 
 function renderWho() {
+  $("householdTitle").textContent = state.me.household.name;
   $("who").innerHTML = state.me.members.map((m) =>
     `<button type="button" data-id="${m.id}" aria-pressed="${m.id === state.memberId}">${esc(m.name)}</button>`).join("");
   $("who").querySelectorAll("button").forEach((b) => b.onclick = () => selectMember(b.dataset.id));
-  $("input").disabled = $("send").disabled = !state.memberId;
+  $("input").disabled = !state.memberId;
+  $("send").disabled = !state.memberId || chatBusy;
+  $("openRecords").disabled = !state.memberId;
+  $("openLabs").disabled = !state.memberId;
   $("input").placeholder = state.memberId ? "Record something or ask a question" : "Add a household member to get started";
 }
 
@@ -369,29 +399,44 @@ input.addEventListener("keydown", (e) => {
 $("composer").addEventListener("submit", async (e) => {
   e.preventDefault();
   const message = input.value.trim();
-  if (!message) return;
+  if (!message || chatBusy || !state.memberId) return;
   input.value = ""; grow();
-  add(esc(message), "msg user");
+  await sendPrompt(message);
+});
+
+async function sendPrompt(message, context = {
+  memberId: state.memberId, conversationId: state.conversationId, history: state.history.map((turn) => ({ ...turn })),
+}) {
+  if (chatBusy) return;
+  chatBusy = true;
+  const bubble = add(`<div>${esc(message)}</div><button class="linkish rerun" type="button" aria-label="Run this message again">Run again</button>`, "msg user");
+  bubble.querySelector(".rerun").onclick = () => sendPrompt(message, context);
   const wait = add("Working on it…", "msg bot thinking");
   $("send").disabled = true;
+  document.querySelectorAll(".rerun").forEach((button) => button.disabled = true);
   try {
-    const r = await api("/chat", { method: "POST", body: JSON.stringify({ message, memberId: state.memberId, conversationId: state.conversationId, history: state.history }) });
+    const r = await api("/chat", { method: "POST", body: JSON.stringify({ message, ...context }) });
     wait.remove();
     state.history.push({ role: "user", content: message });
+    // Keep a retry attached to the member resolved for the original message.
+    if (r.memberId) context.memberId = r.memberId;
     if (r.memberId && r.memberId !== state.memberId) selectMember(r.memberId);
     render(r);
   } catch (err) {
     wait.className = "msg bot error"; wait.textContent = err.message;
   } finally {
-    $("send").disabled = false; input.focus();
+    chatBusy = false;
+    $("send").disabled = !state.memberId;
+    document.querySelectorAll(".rerun").forEach((button) => button.disabled = false);
+    input.focus();
   }
-});
+}
 
 function remember(text) { state.history.push({ role: "assistant", content: text }); state.history = state.history.slice(-12); }
 
 function render(r) {
   if (r.type === "answer") {
-    const src = r.sources?.length ? `<details class="sources"><summary>Based on ${r.sources.length} record${r.sources.length > 1 ? "s" : ""}</summary><ul>${r.sources.map((s) => `<li>${esc(s.label)}</li>`).join("")}</ul></details>` : "";
+    const src = r.sources?.length ? `<details class="sources"><summary>Based on ${r.sources.length} record${r.sources.length > 1 ? "s" : ""}</summary><ul>${r.sources.map((s) => `<li>${["reports", "lab_reports"].includes(s.table) ? `<button class="linkish" type="button" data-lab-source="${esc(s.id)}">${esc(s.label)}</button>` : esc(s.label)}</li>`).join("")}</ul></details>` : "";
     add(md(r.text) + src, "msg bot"); remember(r.text);
   } else if (r.type === "proposal") {
     renderEntry(r); remember("Ready to save: " + r.items.map((i) => i.display).join("; "));
@@ -401,7 +446,10 @@ function render(r) {
 }
 
 function renderEntry(r) {
-  document.querySelectorAll(".entry:not(.saved):not(.closed)").forEach((el) => el.classList.add("closed"));
+  document.querySelectorAll(".entry:not(.saved):not(.closed)").forEach((el) => {
+    el.classList.add("closed");
+    el.querySelectorAll(".actions button").forEach((button) => button.disabled = true);
+  });
   const who = state.me.members.find((m) => m.id === r.memberId)?.name ?? "";
   const el = add(`
     <h3>Ready to save for ${esc(who)}</h3>
@@ -415,15 +463,14 @@ function renderEntry(r) {
   save.onclick = async () => {
     save.disabled = discard.disabled = true;
     try {
-      const res = await api(`/entries/${r.pendingId}/confirm`, { method: "POST" });
+      await api(`/entries/${r.pendingId}/confirm`, { method: "POST" });
       el.classList.add("saved");
       el.querySelector("h3").textContent = `Saved for ${who}`;
-      el.querySelector(".actions").innerHTML = `<button class="btn" type="button">Undo</button><span class="hint">Undo is available for 15 minutes.</span>`;
+      el.querySelector(".actions").innerHTML = `<button class="btn" type="button">Undo</button><span class="hint">Edit or delete records anytime from Records.</span>`;
       const undo = el.querySelector(".actions button");
-      const timer = setTimeout(() => undo.remove(), new Date(res.undoUntil) - Date.now());
       undo.onclick = async () => {
         undo.disabled = true;
-        try { await api(`/entries/${r.pendingId}/undo`, { method: "POST" }); clearTimeout(timer);
+        try { await api(`/entries/${r.pendingId}/undo`, { method: "POST" });
               el.classList.remove("saved"); el.classList.add("closed"); el.querySelector("h3").textContent = "Undone. Nothing was kept.";
               el.querySelector(".actions").remove(); refreshSnapshot(); }
         catch (err) { undo.disabled = false; add(esc(err.message), "msg bot error"); }
@@ -445,17 +492,20 @@ const ACTIVITY_FIELDS = {
   allergies: { substance: "Allergen", reaction: "Reaction", severity: "Severity", noted_on: "Noted on", status: "Status" },
   medications: { name: "Medication", dose_value: "Dose", dose_unit: "Dose unit", route: "Route", frequency: "Frequency", prescriber: "Prescriber", reason: "Reason", start_date: "Start date", end_date: "End date", stop_reason: "Stop reason", status: "Status" },
   vitals: { vital_type: "Measurement", original_value: "Value", original_unit: "Unit", measured_at: "Measured at" },
+  reports: { report_type: "Report type", sections: "Report content", title: "Report", report_date: "Report date", lab_name: "Laboratory", patient_name: "Patient", status: "Status", results: "Test results", notes: "Printed notes" },
   appointments: { starts_at: "When", provider_name: "Provider", specialty: "Specialty", location: "Location", reason: "Reason", status: "Status", outcome_notes: "Outcome" },
 };
+// Old audit events retain their original entity name and hash-chain contents.
+ACTIVITY_FIELDS.lab_reports = ACTIVITY_FIELDS.reports;
 function activityDetails(r) {
   const fields = ACTIVITY_FIELDS[r.entity];
-  const format = (value) => value == null || value === "" ? "Not set" : String(value);
+  const format = (value) => value == null || value === "" ? "Not set" : Array.isArray(value) ? value.map(t => t.heading ? `${t.heading}: ${t.text}` : `${t.testName}: ${t.value}${t.unit ? " " + t.unit : ""}${t.referenceRange ? " (range " + t.referenceRange + ")" : ""}${t.flag !== "not_reported" ? " [" + t.flag + "]" : ""}`).join("; ") : String(value);
   if (fields && ["create", "update", "delete"].includes(r.action)) {
     const before = r.before ?? {}, after = r.after ?? {};
     const record = r.action === "delete" ? before : after;
     const lines = Object.entries(fields).flatMap(([key, label]) => {
       if (r.action === "update") {
-        if (before[key] === after[key]) return [];
+        if (JSON.stringify(before[key]) === JSON.stringify(after[key])) return [];
         return [`<div><strong>${esc(label)}:</strong> ${esc(format(before[key]))} → ${esc(format(after[key]))}</div>`];
       }
       if (record[key] == null || record[key] === "") return [];
@@ -463,7 +513,7 @@ function activityDetails(r) {
     });
     // Identify an updated record even when its name itself did not change.
     if (r.action === "update") {
-      const name = after.substance ?? after.name ?? after.full_name ?? after.vital_type ?? after.provider_name;
+      const name = after.title ?? after.substance ?? after.name ?? after.full_name ?? after.vital_type ?? after.provider_name;
       if (name) lines.unshift(`<div><strong>${esc(name)}</strong></div>`);
     }
     return lines.join("") || "No data fields changed";
@@ -492,6 +542,168 @@ $("openActivity").onclick = async () => {
   } catch (err) { $("activityRows").innerHTML = `<tr><td colspan="5" class="error">${esc(err.message)}</td></tr>`; }
 };
 $("closeActivity").onclick = () => $("activity").close();
+
+// ───── edit and delete saved records, including older and inactive records ─────
+const RECORD_FIELDS = {
+  members: [["full_name", "Full name", "required"], ["preferred_name", "Preferred name"], ["date_of_birth", "Date of birth", "date"], ["eye_color", "Eye color"], ["sex", "Sex", ["female", "male", "other", "unknown"]], ["blood_type", "Blood type", ["A+", "A-", "B+", "B-", "AB+", "AB-", "O+", "O-"]]],
+  allergies: [["substance", "Allergen", "required"], ["reaction", "Reaction"], ["severity", "Severity", ["mild", "moderate", "severe", "unknown"]], ["noted_on", "Noted on", "date"], ["status", "Status", ["active", "inactive"]]],
+  medications: [["name", "Medication", "required"], ["dose_value", "Dose", "number"], ["dose_unit", "Dose unit"], ["route", "Route"], ["frequency", "Frequency"], ["prescriber", "Prescriber"], ["reason", "Reason"], ["start_date", "Start date", "date"], ["end_date", "End date", "date"], ["stop_reason", "Stop reason"], ["status", "Status", ["active", "stopped"]]],
+  vitals: [["value", "Value", "number"], ["measured_at", "Measured at (your local time)", "datetime-local"]],
+  appointments: [["starts_at", "When (your local time)", "datetime-local"], ["provider_name", "Provider"], ["specialty", "Specialty"], ["location", "Location"], ["reason", "Reason"], ["status", "Status", ["scheduled", "completed", "cancelled"]], ["outcome_notes", "Outcome notes"]],
+};
+const RECORD_TITLES = { members: "Profile", allergies: "Allergies", medications: "Medications", vitals: "Measurements", appointments: "Appointments" };
+let recordRows = [];
+function recordTitle({ kind, record: r }) {
+  return r.substance ?? r.name ?? r.full_name ?? (kind === "vitals" ? `${r.vital_type.replace(/_/g, " ")}: ${r.value} ${r.unit}` : r.provider_name || r.specialty || "Appointment");
+}
+$("openRecords").onclick = () => { $("recordsDialog").showModal(); loadRecords(); };
+$("closeRecords").onclick = () => $("recordsDialog").close();
+async function loadRecords() {
+  $("recordsBody").textContent = "Loading…";
+  try {
+    recordRows = await api(`/members/${state.memberId}/records`);
+    $("recordsTitle").textContent = `Records for ${member()?.name ?? "household member"}`;
+    const writable = state.me.user.role !== "viewer";
+    $("recordsBody").innerHTML = `<p>Edit or delete saved records at any time. Changes appear in Activity.</p>` + Object.entries(RECORD_TITLES).map(([kind, title]) => {
+      const rows = recordRows.map((row, index) => ({ ...row, index })).filter((row) => row.kind === kind);
+      return `<h3>${esc(title)}</h3>` + (rows.map((row) => {
+        const r = row.record;
+        const date = r.measured_at ?? r.starts_at ?? r.start_date;
+        const summary = [r.status, r.dose_value != null && `${r.dose_value} ${r.dose_unit ?? ""}`, r.frequency, r.reaction, r.severity, date && new Date(date).toLocaleString()].filter(Boolean).join(" · ");
+        return `<div class="record-item"><strong>${esc(recordTitle(row))}</strong><p>${esc(summary)}</p>${writable ? `<div class="actions"><button class="linkish" data-edit="${row.index}" type="button">Edit</button><button class="linkish error" data-delete="${row.index}" type="button">Delete</button></div>` : ""}</div>`;
+      }).join("") || `<p class="empty">None recorded</p>`);
+    }).join("");
+    $("recordsBody").querySelectorAll("[data-edit]").forEach((button) => button.onclick = () => editRecord(recordRows[Number(button.dataset.edit)]));
+    $("recordsBody").querySelectorAll("[data-delete]").forEach((button) => button.onclick = async () => {
+      const row = recordRows[Number(button.dataset.delete)];
+      const message = row.kind === "members" ? `Delete ${recordTitle(row)}'s profile? Their health records will be hidden with the profile. Activity history is kept.` : `Delete ${recordTitle(row)}? Activity history is kept.`;
+      if (!confirm(message)) return;
+      button.disabled = true;
+      try {
+        await api(`/records/${row.kind}/${row.record.id}`, { method: "DELETE" });
+        await refreshRecordState();
+      } catch (err) { button.disabled = false; alert(err.message); }
+    });
+  } catch (err) { $("recordsBody").innerHTML = `<p class="error">${esc(err.message)}</p>`; }
+}
+function editRecord(row) {
+  const fields = RECORD_FIELDS[row.kind];
+  $("recordsBody").innerHTML = `<h3>Edit ${esc(recordTitle(row))}</h3><form id="recordEditForm" class="profile-form">` + fields.map(([key, label, type]) => {
+    let value = row.record[key] ?? "";
+    if (type === "datetime-local" && value) {
+      const d = new Date(value);
+      value = new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().slice(0, 19);
+    }
+    if (row.kind === "vitals" && key === "value") label += ` (${row.record.unit})`;
+    const control = Array.isArray(type)
+      ? `<select name="${key}">${[...(key === "sex" || key === "blood_type" ? [""] : []), ...type].map((option) => `<option value="${esc(option)}" ${option === value ? "selected" : ""}>${esc(option || "Not recorded")}</option>`).join("")}</select>`
+      : `<input name="${key}" type="${["date", "datetime-local", "number"].includes(type) ? type : "text"}" value="${esc(value)}" ${type === "required" || row.kind === "vitals" || key === "starts_at" ? "required" : ""} ${type === "number" ? 'step="any"' : type === "datetime-local" ? 'step="1"' : 'maxlength="500"'}>`;
+    return `<label>${esc(label)}${control}</label>`;
+  }).join("") + `<p id="recordError" class="error" role="alert"></p><div class="actions"><button class="btn primary" type="submit">Save changes</button><button class="btn" id="cancelRecordEdit" type="button">Cancel</button></div></form>`;
+  $("cancelRecordEdit").onclick = loadRecords;
+  $("recordEditForm").onsubmit = async (e) => {
+    e.preventDefault();
+    const button = e.target.querySelector('[type="submit"]'); button.disabled = true;
+    const data = new FormData(e.target), changes = {};
+    for (const [key, , type] of fields) {
+      const value = String(data.get(key) ?? "").trim();
+      changes[key] = value === "" ? null : type === "number" ? Number(value) : type === "datetime-local" ? new Date(value).toISOString() : value;
+    }
+    try {
+      await api(`/records/${row.kind}/${row.record.id}`, { method: "PATCH", body: JSON.stringify(changes) });
+      await refreshRecordState();
+    } catch (err) { $("recordError").textContent = err.message; button.disabled = false; }
+  };
+}
+async function refreshRecordState() {
+  state.me = await api("/me");
+  if (!state.me.members.some((m) => m.id === state.memberId)) state.memberId = state.me.members[0]?.id ?? null;
+  renderWho(); await refreshSnapshot();
+  if (state.memberId) await loadRecords();
+  else { $("recordsDialog").close(); }
+}
+
+let activeLab = null;
+let labMemberId = null;
+const REPORT_TYPES = {lab:"Lab report",surgery:"Surgery / operative report",discharge:"Discharge summary",recommendation:"Recommendations",other:"Other report"};
+const reportTypeOptions = (selected = "lab") => Object.entries(REPORT_TYPES).map(([value, label]) => `<option value="${value}" ${value === selected ? 'selected' : ''}>${label}</option>`).join('');
+const labWritable = () => state.me.user.role !== "viewer";
+$("openLabs").onclick = () => { labMemberId = state.memberId; $("labsDialog").showModal(); loadLabs(); };
+$("closeLabs").onclick = () => $("labsDialog").close();
+async function downloadLab(id, filename) {
+  const res = await fetch(`/api/reports/${id}/original`, { headers: { "x-dev-user": state.email } });
+  if (!res.ok) throw new Error("Could not download the original report");
+  const url = URL.createObjectURL(await res.blob());
+  const a = document.createElement("a"); a.href = url; a.download = filename || "report.txt"; a.click();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+async function loadLabs() {
+  $("labsBody").textContent = "Loading reports…";
+  try {
+    const reports = await api(`/members/${labMemberId}/reports`);
+    $("labsTitle").textContent = `Reports for ${state.me.members.find(m => m.id === labMemberId)?.name || "household member"}`;
+    $("labsBody").innerHTML = `${labWritable() ? '<button class="btn" id="addLab" type="button">Add report</button>' : ''}<p>Ask questions about saved reports in the chat. Drafts become searchable after review and save.</p><p id="labError" role="alert" class="error"></p>` + (reports.length ? reports.map(r => `<div class="record-row" style="padding:16px 0;border-top:1px solid var(--line)"><strong>${esc(r.data.title)}</strong> · ${esc(r.data.reportDate || "Date not printed")} · ${r.status === "draft" ? "Draft — needs review" : "Saved"} · ${esc(REPORT_TYPES[r.data.reportType || "lab"])} · ${r.data.results.length} test results · ${(r.data.sections || []).length} sections <button class="linkish" data-lab="${r.id}">${labWritable() ? "Review / edit" : "View"}</button> <button class="linkish" data-download="${r.id}">Original</button>${labWritable() ? ` <button class="linkish" data-delete-lab="${r.id}">Delete</button>` : ''}</div>`).join("") : "<p>No reports yet.</p>");
+    if ($("addLab")) $("addLab").onclick = addLabForm;
+    $("labsBody").querySelectorAll("[data-lab]").forEach(b => b.onclick = () => openLab(b.dataset.lab));
+    $("labsBody").querySelectorAll("[data-download]").forEach(b => b.onclick = () => downloadLab(b.dataset.download, reports.find(r => r.id === b.dataset.download)?.fileName).catch(e => $("labError").textContent = e.message));
+    $("labsBody").querySelectorAll("[data-delete-lab]").forEach(b => b.onclick = async () => {
+      if (!confirm("Delete this report? It will be removed from searches. Activity history is kept.")) return;
+      try { b.disabled = true; await api(`/reports/${b.dataset.deleteLab}`, { method: "DELETE" }); await loadLabs(); }
+      catch (e) { $("labError").textContent = e.message; b.disabled = false; }
+    });
+  } catch (e) { $("labsBody").textContent = e.message; }
+}
+function addLabForm() {
+  $("labsBody").innerHTML = `<form id="labUpload"><p>Upload a PDF, PNG, JPEG or WebP (up to 10 MB), or paste the report text.</p><p class="hint">Reports are processed by your configured AI provider. Review extracted values before saving.</p><label>Report type <select id="uploadReportType"><option value="">Detect from document</option>${reportTypeOptions(null)}</select></label><label>Report file <input id="labFile" type="file" accept="application/pdf,image/png,image/jpeg,image/webp"></label><label>Or paste report text <textarea id="labText" rows="8" style="width:100%" maxlength="100000"></textarea></label><p id="labError" role="alert" class="error"></p><button class="btn" id="readLab">Read report</button> <button class="linkish" type="button" id="cancelLab">Back</button></form>`;
+  $("cancelLab").onclick = loadLabs;
+  $("labUpload").onsubmit = async e => {
+    e.preventDefault(); const b = $("readLab"); b.disabled = true; $("cancelLab").disabled = true; b.textContent = "Reading report…";
+    try {
+      const file = $("labFile").files[0], text = $("labText").value.trim();
+      if (Boolean(file) === Boolean(text)) throw new Error("Choose a file or paste text, one at a time");
+      let payload = { text };
+      if (file) {
+        if (file.size > 10 * 1024 * 1024) throw new Error("Choose a file no larger than 10 MB");
+        const base64 = await new Promise((resolve, reject) => { const reader = new FileReader(); reader.onload = () => resolve(String(reader.result).split(",")[1]); reader.onerror = reject; reader.readAsDataURL(file); });
+        payload = { file: { name: file.name, mime: file.type, base64 } };
+      }
+      activeLab = await api(`/members/${labMemberId}/reports`, { method: "POST", body: JSON.stringify({ ...payload, reportType: $("uploadReportType").value || undefined }) }); reviewLab();
+    } catch (err) { $("labError").textContent = err.message; b.disabled = false; $("cancelLab").disabled = false; b.textContent = "Read report"; }
+  };
+}
+async function openLab(id) {
+  try {
+    activeLab = await api(`/reports/${id}`); labMemberId = activeLab.memberId;
+    if (!$("labsDialog").open) $("labsDialog").showModal(); reviewLab();
+  } catch (e) { alert(e.message); }
+}
+function narrativeSection(section) {
+  return `<div data-section style="border-top:1px solid var(--line);padding:12px 0"><label>Section heading <input name="sectionHeading" value="${esc(section.heading)}" ${labWritable() ? '' : 'disabled'}></label><label>Section text <textarea name="sectionText" rows="6" style="width:100%" ${labWritable() ? '' : 'disabled'}>${esc(section.text)}</textarea></label>${labWritable() ? '<button type="button" class="linkish" data-remove-section>Remove section</button>' : ''}</div>`;
+}
+function reviewLab() {
+  const r = activeLab, d = r.data;
+  const field = (name, value, type = "text") => `<input name="${name}" type="${type}" value="${esc(value)}" ${type === "date" ? 'min="1900-01-01" max="2100-12-31"' : ''} ${labWritable() ? '' : 'disabled'}>`;
+  const selectedName = state.me.members.find(m => m.id === r.memberId)?.name;
+  $("labsTitle").textContent = `Review report for ${selectedName || "household member"}`;
+  $("labsBody").innerHTML = `<form id="labReview"><p>${r.status === "draft" ? "Check the extracted data against the original before saving." : "Changes can be saved at any time and will update search results."}</p>${d.patientName ? `<p>Patient printed on report: <strong>${esc(d.patientName)}</strong>. Confirm this belongs to ${esc(selectedName)}.</p>` : '<p>Patient name was not printed or could not be read. Confirm the selected member.</p>'}${r.warnings.map(w => `<p class="error">${esc(w)}</p>`).join('')}<div class="lab-metadata"><label>Report type <select name="reportType" ${labWritable() ? '' : 'disabled'}>${reportTypeOptions(d.reportType)}</select></label><label>Title ${field('title', d.title)}</label><label>Report date ${field('reportDate', d.reportDate, 'date')}</label><label>Facility / author ${field('labName', d.labName)}</label><label>Patient name ${field('patientName', d.patientName)}</label></div><details ${d.results.length || d.reportType === "lab" ? 'open' : ''}><summary>Test results (if present)</summary><div style="overflow-x:auto"><table><thead><tr><th>Test</th><th>Result</th><th>Unit</th><th>Printed range</th><th>Printed flag</th><th></th></tr></thead><tbody id="labResults">${d.results.map((t, i) => `<tr data-result="${i}"><td>${field('testName', t.testName)}</td><td>${field('value', t.value)}</td><td>${field('unit', t.unit)}</td><td>${field('referenceRange', t.referenceRange)}</td><td><select name="flag" ${labWritable() ? '' : 'disabled'}>${['not_reported','normal','high','low','abnormal','critical'].map(f => `<option ${t.flag === f ? 'selected' : ''}>${f}</option>`).join('')}</select><details><summary>Source text</summary>${esc(t.sourceExcerpt)}</details></td><td>${labWritable() ? '<button type="button" class="linkish" data-remove-result>Remove</button>' : ''}</td></tr>`).join('')}</tbody></table></div>${labWritable() ? '<button type="button" class="linkish" id="addLabResult">Add result</button>' : ''}</details><h3>Report content</h3><div id="reportSections">${(d.sections || []).map(section => narrativeSection(section)).join('')}</div>${labWritable() ? '<button type="button" class="linkish" id="addReportSection">Add section</button>' : ''}<label>Printed notes <textarea name="notes" rows="4" style="width:100%" ${labWritable() ? '' : 'disabled'}>${esc(d.notes)}</textarea></label><p class="hint">Keep values and units as printed. Leave absent ranges empty and absent flags as not_reported.</p><p id="labError" role="alert" class="error"></p>${labWritable() ? '<button class="btn" id="saveLab">Save and make searchable</button>' : ''} <button type="button" class="linkish" id="originalLab">Download original</button> <button type="button" class="linkish" id="backLabs">Back</button></form>`;
+  $("reportSections").onclick = e => { if (e.target.closest('[data-remove-section]')) e.target.closest('[data-section]').remove(); };
+  if ($("addReportSection")) $("addReportSection").onclick = () => $("reportSections").insertAdjacentHTML('beforeend', narrativeSection({heading:'',text:''}));
+  $("originalLab").onclick = () => downloadLab(r.id, r.fileName).catch(e => $("labError").textContent = e.message);
+  $("backLabs").onclick = loadLabs;
+  $("labResults").onclick = e => { if (e.target.closest('[data-remove-result]')) e.target.closest('tr').remove(); };
+  if ($("addLabResult")) $("addLabResult").onclick = () => { const i = d.results.length; d.results.push({testName:'',value:'',unit:null,referenceRange:null,flag:'not_reported',sourceExcerpt:''}); const tr = document.createElement('tr'); tr.dataset.result = i; tr.innerHTML = `<td>${field('testName','')}</td><td>${field('value','')}</td><td>${field('unit','')}</td><td>${field('referenceRange','')}</td><td><select name="flag"><option>not_reported</option><option>normal</option><option>high</option><option>low</option><option>abnormal</option><option>critical</option></select></td><td><button type="button" class="linkish" data-remove-result>Remove</button></td>`; $("labResults").append(tr); };
+  $("labReview").onsubmit = async e => {
+    e.preventDefault(); if (!labWritable()) return;
+    const b = $("saveLab"); b.disabled = true; b.textContent = "Saving search index…"; $("backLabs").disabled = true;
+    const form = new FormData(e.target), nullable = v => String(v || '').trim() || null;
+    const results = [...$("labResults").querySelectorAll('tr')].map(tr => { const read = n => tr.querySelector(`[name="${n}"]`).value.trim(); return { testName:read('testName'), value:read('value'), unit:nullable(read('unit')), referenceRange:nullable(read('referenceRange')), flag:read('flag'), sourceExcerpt:d.results[Number(tr.dataset.result)].sourceExcerpt }; });
+    const sections = [...$("reportSections").querySelectorAll('[data-section]')].map(el => ({ heading: el.querySelector('[name="sectionHeading"]').value.trim(), text: el.querySelector('[name="sectionText"]').value.trim() }));
+    const data = { reportType: String(form.get('reportType')), sections, title:String(form.get('title')).trim(), reportDate:nullable(form.get('reportDate')), labName:nullable(form.get('labName')), patientName:nullable(form.get('patientName')), notes:String(form.get('notes') || ''), results };
+    try { await api(`/reports/${r.id}`, { method:'PUT', body:JSON.stringify({revision:r.revision,data}) }); await loadLabs(); }
+    catch (err) { $("labError").textContent = err.message; b.disabled = false; b.textContent = "Save and make searchable"; $("backLabs").disabled = false; }
+  };
+}
+document.addEventListener('click', e => { const b = e.target.closest('[data-lab-source]'); if (b) openLab(b.dataset.labSource); });
 
 // ───── start ─────
 if (state.email) boot().catch(() => { $("signin").hidden = false; });

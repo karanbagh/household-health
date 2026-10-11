@@ -6,6 +6,8 @@ import { config } from "./config.js";
 import { startTracing, stopTracing } from "./lib/tracing.js";
 import { apiRoutes } from "./routes/api.js";
 import { onboardingRoutes } from "./routes/onboarding.js";
+import { makeLabRoutes } from "./routes/labs.js";
+import { recordRoutes } from "./routes/records.js";
 import { pool } from "./db/client.js";
 
 startTracing();
@@ -23,6 +25,8 @@ const app = Fastify({
 app.register(fastifyStatic, { root: fileURLToPath(new URL("../web", import.meta.url)) });
 app.register(apiRoutes, { prefix: "/api" });
 app.register(onboardingRoutes, { prefix: "/api" });
+app.register(recordRoutes, { prefix: "/api" });
+app.register(makeLabRoutes(), { prefix: "/api" });
 
 app.setErrorHandler((err: { statusCode?: number; message?: string }, req, reply) => {
   req.log.error({ err }, "request failed");

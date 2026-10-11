@@ -11,7 +11,7 @@
     "start": "node --env-file=.env --import tsx src/server.ts",
     "db:migrate": "tsx --env-file=.env scripts/migrate.ts",
     "typecheck": "tsc --noEmit",
-    "test": "tsx --test test/vitals.test.ts && tsx --env-file=.env --test test/integration.test.ts test/graph.test.ts test/members.test.ts",
+    "test": "tsx --test test/vitals.test.ts && tsx --env-file=.env --test test/integration.test.ts test/graph.test.ts test/members.test.ts test/labs.test.ts",
     "audit:verify": "tsx --env-file=.env scripts/verify-audit.ts"
   },
   "dependencies": {

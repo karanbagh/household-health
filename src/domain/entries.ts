@@ -23,6 +23,14 @@ const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 const validDate = (d: string | null | undefined): d is string => !!d && DATE_RE.test(d) && !Number.isNaN(Date.parse(d));
 const joinBits = (bits: (string | null | undefined | false)[]) => bits.filter(Boolean).join(", ");
 
+function medicationNameCheck(m: { name: string; original_name: string; name_resolution: "exact" | "corrected" | "uncertain" }) {
+  if (m.name_resolution === "uncertain" || !m.name.trim()) {
+    return { issue: `What is the exact medication name on the label for "${m.original_name}"? I couldn't identify it confidently.`, assumptions: [] };
+  }
+  const changed = m.name.trim().toLowerCase() !== m.original_name.trim().toLowerCase();
+  return { issue: null, assumptions: changed ? [`Medication name corrected: "${m.original_name}" → "${m.name}". Check the name on the label before saving.`] : [] };
+}
+
 /**
  * Deterministic validation of what the LLM extracted. Anything uncertain becomes either an
  * assumption (shown on the confirm card) or an issue (asked back to the parent; nothing is proposed).
@@ -57,7 +65,9 @@ export async function buildProposals(db: Db, hh: Household, memberId: string, it
       case "medication_start": {
         const m = it.medication_start;
         if (!m) break;
-        const assumptions: string[] = [];
+        const nameCheck = medicationNameCheck(m);
+        if (nameCheck.issue) { issues.push(nameCheck.issue); break; }
+        const assumptions = [...nameCheck.assumptions];
         let startDate = m.start_date;
         if (!startDate) { startDate = today; assumptions.push("Start date not given; used today"); }
         if (!validDate(startDate)) { issues.push(`When did ${m.name} start? I couldn't read "${m.start_date}".`); break; }
@@ -79,11 +89,13 @@ export async function buildProposals(db: Db, hh: Household, memberId: string, it
       case "medication_stop": {
         const m = it.medication_stop;
         if (!m) break;
+        const nameCheck = medicationNameCheck(m);
+        if (nameCheck.issue) { issues.push(nameCheck.issue); break; }
         const matches = await db.select({ id: medications.id, name: medications.name, startDate: medications.startDate }).from(medications)
           .where(and(eq(medications.memberId, memberId), eq(medications.status, "active"), isNull(medications.deletedAt), ilike(medications.name, `%${m.name.replace(/[%_]/g, "")}%`)));
         if (matches.length === 0) { issues.push(`I can't find ${m.name} on the active medication list. Which medication was stopped?`); break; }
         if (matches.length > 1) { issues.push(`More than one active medication matches "${m.name}": ${matches.map((x) => `${x.name} (since ${x.startDate ?? "unknown"})`).join("; ")}. Which one?`); break; }
-        const assumptions: string[] = [];
+        const assumptions = [...nameCheck.assumptions];
         let endDate = m.end_date;
         if (!endDate) { endDate = today; assumptions.push("Stop date not given; used today"); }
         if (!validDate(endDate)) { issues.push(`When was ${m.name} stopped?`); break; }
