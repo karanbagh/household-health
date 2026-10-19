@@ -148,3 +148,32 @@ test("latest discharge questions preload the complete discharge document rather 
   const data = JSON.parse(String(message.content)) as { reports: { data: { reportType: string; sections: { text: string }[] } }[] };
   assert.equal(data.reports.length, 1); assert.equal(data.reports[0]!.data.reportType, "discharge"); assert.match(data.reports[0]!.data.sections[0]!.text, /two weeks/);
 });
+
+test("a member chat asks to switch before using another member's records or drafting an entry", async () => {
+  const second = await admin.query<{ id: string }>("insert into members(household_id,full_name) values($1,'Second Member') returning id", [ctx.householdId]);
+  const secondId = second.rows[0]!.id;
+  for (const intent of ["question", "entry"] as const) {
+    const { model, seen } = scriptedModel([{ intent, member_id: secondId, question: "What medications is Second Member taking?", items: intent === "entry" ? [{ ...none, kind: "profile_update", profile_update: { full_name: null, preferred_name: null, date_of_birth: null, sex: null, blood_type: null, eye_color: "blue" } }] : [] }], []);
+    const result = await runChat({ ctx: { ...ctx, requestId: randomUUID() }, hh, members: [...members(), { id: secondId, name: "Second Member", dateOfBirth: null }], defaultMemberId: memberId, message: "Second Member has blue eyes", history: [{role:"user",content:"Harshal has brown eyes"}], callbacks: [], model });
+    assert.equal(result.type, "clarify"); if (result.type !== "clarify") continue;
+    assert.equal(result.memberId, memberId); assert.match(result.text, /Select Second Member/);
+    assert.equal(seen.length, 0, "No answer tool or write proposal should run for a different member");
+  }
+  const proposals = await admin.query("select 1 from pending_entries where member_id=$1",[secondId]); assert.equal(proposals.rows.length, 0);
+});
+
+test("appointment tools expose the saved patient association and exclude other members' appointments", async () => {
+  const other = await admin.query<{ id: string }>("insert into members(household_id,full_name) values($1,'Other Appointment Member') returning id", [ctx.householdId]);
+  const own = await admin.query<{ id: string }>("insert into appointments(household_id,member_id,starts_at,specialty) values($1,$2,'2026-10-15T19:00:00Z','Dentist') returning id", [ctx.householdId, memberId]);
+  await admin.query("insert into appointments(household_id,member_id,starts_at,specialty) values($1,$2,'2026-10-15T19:00:00Z','Dentist')", [ctx.householdId, other.rows[0]!.id]);
+  const {model, seen} = scriptedModel([{intent:"question",member_id:memberId,question:"Is the dentist appointment associated with Harshal?",items:[]}], [
+    new AIMessage({content:"",tool_calls:[{id:"appointment_patient",name:"get_appointments",args:{when:"all",limit:50}}]}),
+    new AIMessage("Yes, the dentist appointment is associated with Harshal."),
+  ]);
+  const response = await runChat({ctx:{...ctx,requestId:randomUUID()},hh,members:members(),defaultMemberId:memberId,message:"is it associated with harshal",history:[{role:"user",content:"What dentist appointment is scheduled?"}],callbacks:[],model});
+  assert.equal(response.type,"answer"); if(response.type!=="answer") return;
+  const output = seen.at(-1)!.find(message=>message.getType()==="tool"); assert.ok(output);
+  const rows = JSON.parse(String(output.content)) as {id:string;member_id:string}[];
+  assert.equal(rows.length,1); assert.equal(rows[0]!.id,own.rows[0]!.id); assert.equal(rows[0]!.member_id,memberId);
+  assert.equal(response.sources[0]!.id,own.rows[0]!.id);
+});

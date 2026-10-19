@@ -2,12 +2,14 @@
 import pg from "pg";
 import { readdir, readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
+import { databaseConnectionString } from "../src/db/connection.js";
 
-const url = process.env.DATABASE_ADMIN_URL;
-if (!url) throw new Error("DATABASE_ADMIN_URL is not set");
+const url = process.env.DATABASE_URL_UNPOOLED || process.env.DATABASE_ADMIN_URL;
+if (!url) throw new Error("Set DATABASE_URL_UNPOOLED (Neon) or DATABASE_ADMIN_URL (local)");
+if (new URL(url).hostname.includes("-pooler")) throw new Error("Migrations require a direct, unpooled connection");
 const dir = fileURLToPath(new URL("../db/migrations", import.meta.url));
 
-const client = new pg.Client({ connectionString: url, connectionTimeoutMillis: 10_000 });
+const client = new pg.Client({ connectionString: databaseConnectionString(url), connectionTimeoutMillis: 15_000 });
 await client.connect();
 try {
   await client.query("create table if not exists schema_migrations (name text primary key, applied_at timestamptz not null default now())");

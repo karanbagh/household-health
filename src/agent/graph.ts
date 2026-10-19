@@ -49,6 +49,7 @@ Rules:
 const ANSWER_PROMPT = (hh: Household, member: MemberRef) => `You answer a parent's questions about ${member.name}'s health record.
 Now: ${nowDescription(hh.timezone)}.
 - Use the tools for every fact. Answer only from tool results; if something is not recorded, say so plainly.
+- All read tools are scoped to ${member.name} (member_id=${member.id}). A returned appointment's member_id is its explicit patient association. Do not claim that its patient is unknown merely because the notes do not repeat the name.
 - Give dates with every reading or event. Use the trend numbers the tools compute; do not do arithmetic yourself.
 - Be brief and direct: lead with the answer, then the supporting details. Use short lists only for several items.
 - For the latest lab report, use get_latest_lab_report (all tests, no date filters). For lab history or comparisons, use get_lab_reports; for semantic discovery use search_lab_results. Ranked search excerpts are not a complete history. Disclose truncated results.
@@ -80,9 +81,14 @@ export async function runChat(args: {
 
   const graph = new StateGraph(State)
     .addNode("understand", async () => {
+      const activeMember = memberById(args.defaultMemberId);
       const u = await model.withStructuredOutput(understandSchema(memberIds), { name: "understand_message" })
-        .invoke([new SystemMessage(understandPrompt(hh, members)), ...historyMsgs, new HumanMessage(message)]);
+        .invoke([new SystemMessage(understandPrompt(hh, members) + (activeMember ? `\nActive member chat: ${activeMember.id}: ${activeMember.name}. Resolve unnamed references to this member. If the user explicitly names another member, identify that member so the app can ask them to switch chats.` : "")), ...historyMsgs, new HumanMessage(message)]);
       const memberId = memberById(u.member_id)?.id ?? memberById(args.defaultMemberId)?.id ?? (members.length === 1 ? members[0]!.id : null);
+      if (activeMember && memberId && memberId !== activeMember.id) {
+        return { understanding: u, memberId: activeMember.id, result: { type: "clarify", memberId: activeMember.id,
+          text: `This chat is for ${activeMember.name}. Select ${memberById(memberId)!.name} to record or ask about their information.` } satisfies ChatResult };
+      }
       return { understanding: u, memberId };
     })
 
@@ -150,11 +156,12 @@ export async function runChat(args: {
 
     .addEdge(START, "understand")
     .addConditionalEdges("understand", (s) => {
+      if (s.result) return END;
       const intent = s.understanding!.intent;
       if (intent === "other") return "other";
       if (!s.memberId) return "ask_member";
       return intent === "entry" ? "propose" : "prepare_answer";
-    }, ["other", "ask_member", "propose", "prepare_answer"])
+    }, [END, "other", "ask_member", "propose", "prepare_answer"])
     .addEdge("prepare_answer", "agent")
     .addConditionalEdges("agent", (s) => (toolsCondition(s) === "tools" ? "tools" : "finish_answer"), ["tools", "finish_answer"])
     .addEdge("tools", "agent")

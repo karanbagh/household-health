@@ -145,3 +145,16 @@ export const reportChunks = pgTable("report_chunks", {
   revision: integer("revision").notNull(), chunkNo: integer("chunk_no").notNull(), content: text("content").notNull(),
   embedding: vector("embedding", { dimensions: 1536 }).notNull(), embeddingModel: text("embedding_model").notNull(),
 });
+
+export const chatSessions = pgTable("chat_sessions", {
+  id: uuid("id").primaryKey().defaultRandom(), householdId: uuid("household_id").notNull(), memberId: uuid("member_id").notNull(), userId: uuid("user_id").notNull(),
+  conversationKey: text("conversation_key").notNull(), title: text("title").notNull(), turns: jsonb("turns").$type<import("../domain/chats.js").SavedTurn[]>().notNull(), createdAt: ts("created_at").notNull(), updatedAt: ts("updated_at").notNull(),
+});
+
+// Authentication tables are reachable through restricted security-definer functions.
+export const authSessions = pgTable("auth_sessions", {
+  tokenHash: text("token_hash").primaryKey(), userId: uuid("user_id").notNull(), csrfToken: text("csrf_token").notNull(), expiresAt: ts("expires_at").notNull(), createdAt: ts("created_at").notNull(),
+});
+export const oauthTransactions = pgTable("oauth_transactions", {
+  tokenHash: text("token_hash").primaryKey(), state: text("state").notNull(), nonce: text("nonce").notNull(), verifier: text("verifier").notNull(), expiresAt: ts("expires_at").notNull(),
+});

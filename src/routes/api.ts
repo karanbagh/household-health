@@ -1,4 +1,5 @@
-import type { FastifyInstance } from "fastify";
+import { saveChatTurn } from "../domain/chats.js";
+import type { FastifyInstance, FastifyPluginOptions } from "fastify";
 import { z } from "zod";
 import { and, asc, desc, eq, gte, isNull, sql } from "drizzle-orm";
 import { withTenant, type Db, type TenantContext } from "../db/client.js";
@@ -24,7 +25,7 @@ async function loadHousehold(db: Db): Promise<{ hh: Household & { name: string }
 
 const canWrite = (ctx: TenantContext) => ctx.role === "owner" || ctx.role === "editor";
 
-export async function apiRoutes(app: FastifyInstance) {
+export async function apiRoutes(app: FastifyInstance, options: FastifyPluginOptions & { chatRunner?: typeof runChat } = {}) {
   app.addHook("preHandler", authenticate);
 
   app.get("/me", async (req) => {
@@ -65,9 +66,10 @@ export async function apiRoutes(app: FastifyInstance) {
     if (!body.success) return reply.code(400).send({ error: "Invalid request", details: body.error.issues });
     const ctx = req.tenant;
     const { hh, members: ms } = await withTenant(ctx, loadHousehold);
+    if (body.data.memberId && !ms.some(member => member.id === body.data.memberId)) return reply.code(404).send({ error: "Member not found" });
     const handler = traceHandler({ userId: ctx.userId, householdId: ctx.householdId, conversationId: body.data.conversationId, requestId: ctx.requestId });
 
-    const result = await runChat({
+    const result = await (options.chatRunner ?? runChat)({
       ctx, hh, members: ms, defaultMemberId: body.data.memberId ?? null,
       message: body.data.message, history: body.data.history, callbacks: handler ? [handler] : [],
     });
@@ -76,6 +78,8 @@ export async function apiRoutes(app: FastifyInstance) {
     if (result.type === "proposal" && traceId) {
       await withTenant(ctx, (db) => db.update(pendingEntries).set({ traceId }).where(eq(pendingEntries.id, result.pendingId)));
     }
+    const chatMember = body.data.memberId ?? ("memberId" in result ? result.memberId : null);
+    if (chatMember) await saveChatTurn(ctx, chatMember, body.data.conversationId, { message: body.data.message, response: result, historyBefore: body.data.history });
     return { ...result, requestId: ctx.requestId, traceId };
   });
 
@@ -92,7 +96,7 @@ export async function apiRoutes(app: FastifyInstance) {
         const created = await commitProposals(db, p.memberId, ctx.userId, ctx.householdId, p.sourceText, p.proposals as Proposal[]);
         await db.update(pendingEntries).set({ status: "confirmed", createdRecords: created, resolvedAt: new Date() }).where(eq(pendingEntries.id, p.id));
         await audit(db, { ...ctx, traceId: p.traceId }, { action: "entry_confirmed", entity: "pending_entries", entityId: p.id, memberId: p.memberId, details: { records: created } });
-        return { status: "confirmed", records: created.length };
+        return { status: "confirmed", records: created.length, appointments: created.filter(record => record.table === "appointments" && record.action === "insert").map(record => record.id) };
       });
     } catch (err) {
       if (err instanceof EntryConflict) return reply.code(409).send({ error: err.message });

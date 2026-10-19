@@ -6,6 +6,11 @@ import pg from "pg";
 import { buildReadTools } from "../src/agent/tools.js";
 import { onboardingRoutes } from "../src/routes/onboarding.js";
 import { apiRoutes } from "../src/routes/api.js";
+import type { runChat, ChatResult } from "../src/agent/graph.js";
+import { appointmentRoutes } from "../src/routes/appointments.js";
+import { appointmentCalendar } from "../src/domain/calendar.js";
+import { chatRoutes } from "../src/routes/chats.js";
+import { saveChatTurn } from "../src/domain/chats.js";
 import { makeLabRoutes } from "../src/routes/labs.js";
 import { pool, type TenantContext } from "../src/db/client.js";
 import { searchLabs, reportChunks, decodeLabFile, vectorLiteral, type LabServices, type LabReport, type ExtractedLab } from "../src/domain/labs.js";
@@ -29,7 +34,7 @@ const services: LabServices = {
   embedQuery: async text => vector(text), embedDocuments: async texts => { if (failIndex) throw new Error("provider unavailable"); return texts.map(vector); },
 };
 before(async () => {
-  await admin.connect(); app.register(onboardingRoutes, { prefix: "/api" }); app.register(apiRoutes, { prefix: "/api" }); app.register(makeLabRoutes(services), { prefix: "/api" }); await app.ready();
+  await admin.connect(); app.register(onboardingRoutes, { prefix: "/api" }); app.register(apiRoutes, { prefix: "/api", chatRunner: async (args: Parameters<typeof runChat>[0]): Promise<ChatResult> => ({type:"answer",memberId:args.defaultMemberId!,text:"Synthetic answer",sources:[]}) }); app.register(makeLabRoutes(services), { prefix: "/api" }); app.register(chatRoutes, { prefix: "/api" }); app.register(appointmentRoutes, {prefix:"/api",now:()=>new Date("2026-10-11T12:00:00Z")}); await app.ready();
   await app.inject({ method: "POST", url: "/api/households", payload: { email, displayName: "Lab Owner", name: "Lab test household" } });
   const me = (await app.inject({ url: "/api/me", headers })).json<{ user: { id: string }; household: { id: string } }>();
   ctx = { householdId: me.household.id, userId: me.user.id, role: "owner", requestId: randomUUID() };
@@ -153,4 +158,50 @@ test("narrative indexing covers long sections and preserves instructions across 
   const chunks = reportChunks({ ...fixture, results: [], notes: "", reportType: "surgery", sections: [{ heading: "Recommendations", text }] });
   assert.ok(chunks.some(chunk => chunk.includes("Follow up with the surgeon in two weeks.")));
   assert.ok(chunks.at(-1)!.endsWith(text.slice(2600)));
+});
+
+test("saved sessions survive retrieval, isolate users and members, and preserve ordered follow-up context", async () => {
+  const key=randomUUID(), otherKey=randomUUID();
+  const first={message:"What was recorded?",response:{type:"answer" as const,memberId,text:"Synthetic answer",sources:[]},historyBefore:[]};
+  const posted=await app.inject({method:"POST",url:"/api/chat",headers,payload:{memberId,conversationId:key,message:first.message,history:[]}});
+  assert.equal(posted.statusCode,200,posted.body);
+  await saveChatTurn(ctx,memberId,key,{message:"What about before?",response:{type:"answer",memberId,text:"Synthetic follow-up",sources:[]},historyBefore:[{role:"user",content:first.message},{role:"assistant",content:"Synthetic answer"}]});
+  await saveChatTurn(ctx,otherMemberId,otherKey,first);
+  const list=await app.inject({url:`/api/members/${memberId}/chats`,headers});assert.equal(list.statusCode,200);
+  const sessions=list.json<{conversationId:string;turnCount:number;title:string}[]>();assert.equal(sessions.length,1);assert.equal(sessions[0]!.conversationId,key);assert.equal(sessions[0]!.turnCount,2);
+  const resumed=await app.inject({url:`/api/members/${memberId}/chats/${key}`,headers});assert.equal(resumed.statusCode,200);
+  const saved=resumed.json<{turns:{message:string;historyBefore:{content:string}[]}[]}>();assert.equal(saved.turns[1]!.message,"What about before?");assert.equal(saved.turns[1]!.historyBefore[1]!.content,"Synthetic answer");
+  for(const account of [otherEmail,viewerEmail]) assert.equal((await app.inject({url:`/api/members/${memberId}/chats/${key}`,headers:{"x-dev-user":account}})).statusCode,404);
+  assert.equal((await app.inject({url:`/api/members/${otherMemberId}/chats/${key}`,headers})).statusCode,404);
+  const pending=await admin.query<{id:string}>("insert into pending_entries(household_id,member_id,created_by,source_text,proposals,status) values($1,$2,$3,'synthetic','[]','confirmed') returning id",[ctx.householdId,memberId,ctx.userId]);
+  await saveChatTurn(ctx,memberId,key,{message:"Synthetic entry",response:{type:"proposal",memberId,pendingId:pending.rows[0]!.id,items:[]},historyBefore:[]});
+  const current=(await app.inject({url:`/api/members/${memberId}/chats/${key}`,headers})).json<{turns:{response:{entryStatus?:string}}[]}>();assert.equal(current.turns.at(-1)!.response.entryStatus,"confirmed");
+});
+
+test("calendar invites preserve UTC timing, reminder choice, safe text escaping and UTF-8 folding",()=>{
+  const id=randomUUID();
+  const calendar=appointmentCalendar({id,memberName:"Test, Member",startsAt:new Date("2026-10-15T19:00:00Z"),providerName:"Dr. Example",specialty:"Dentist",location:"Room; 1\nBEGIN:VEVENT"},60,30,new Date("2026-10-11T12:00:00Z"));
+  assert.match(calendar,/DTSTART:20261015T190000Z/);assert.match(calendar,/DTEND:20261015T193000Z/);assert.match(calendar,/TRIGGER:-PT60M/);assert.match(calendar,/SUMMARY:Test\\, Member/);assert.match(calendar,/LOCATION:Room\\; 1\\nBEGIN:VEVENT/);
+  assert.equal(calendar.split("\r\n").filter(line=>line==="BEGIN:VEVENT").length,1);
+  const long=appointmentCalendar({id,memberName:"測".repeat(100),startsAt:new Date(),providerName:null,specialty:null,location:null},15,60);
+  assert.ok(long.split("\r\n").every(line=>Buffer.byteLength(line,"utf8")<=75));
+  assert.ok(long.replace(/\r\n /g,"").includes("測".repeat(100)));
+});
+
+test("login notice includes only scheduled appointments within seven days; calendar exports are tenant scoped",async()=>{
+  const create=async(member:string,time:string,status:string,household=ctx.householdId)=>{
+    const inserted=await admin.query<{id:string}>("insert into appointments(household_id,member_id,starts_at,specialty,status) values($1,$2,$3,'Dentist',$4) returning id",[household,member,time,status]);return inserted.rows[0]!.id;
+  };
+  const upcoming=await create(memberId,"2026-10-12T19:00:00Z","scheduled");
+  const cancelled=await create(otherMemberId,"2026-10-12T19:00:00Z","cancelled");
+  const completed=await create(memberId,"2026-10-12T19:00:00Z","completed");
+  await create(memberId,"2026-10-11T11:59:59Z","scheduled");await create(memberId,"2026-10-18T12:00:00Z","scheduled");
+  const listed=await app.inject({url:"/api/appointments/upcoming",headers});assert.equal(listed.statusCode,200);
+  const body=listed.json<{appointments:{id:string;memberName:string}[];hasMore:boolean}>();assert.deepEqual(body.appointments.map(a=>a.id),[upcoming]);assert.equal(body.appointments[0]!.memberName,"Test Member");assert.equal(body.hasMore,false);
+  const exported=await app.inject({url:`/api/appointments/${upcoming}/calendar?reminderMinutes=15&durationMinutes=30`,headers});assert.equal(exported.statusCode,200);assert.match(exported.headers["content-type"] as string,/text\/calendar/);assert.match(exported.body,/TRIGGER:-PT15M/);assert.match(exported.body,/UID:appointment-/);
+  assert.equal((await app.inject({url:`/api/appointments/${upcoming}/calendar`,headers:{"x-dev-user":viewerEmail}})).statusCode,200);
+  assert.equal((await app.inject({url:`/api/appointments/${upcoming}/calendar`,headers:{"x-dev-user":otherEmail}})).statusCode,404);
+  assert.equal((await app.inject({url:`/api/appointments/${upcoming}/calendar?reminderMinutes=-5`,headers})).statusCode,400);
+  for(const id of [cancelled,completed]) assert.equal((await app.inject({url:`/api/appointments/${id}/calendar`,headers})).statusCode,404);
+  await admin.query("update appointments set deleted_at=now() where id=$1",[upcoming]);assert.equal((await app.inject({url:`/api/appointments/${upcoming}/calendar`,headers})).statusCode,404);
 });

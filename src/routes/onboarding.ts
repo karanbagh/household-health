@@ -1,6 +1,7 @@
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { pool } from "../db/client.js";
+import { cookieToken, requireCsrf, sessionIdentity, tokenHash } from "../lib/sessions.js";
 import { config } from "../config.js";
 
 const HouseholdBody = z.object({
@@ -16,6 +17,19 @@ const HouseholdBody = z.object({
 
 export async function onboardingRoutes(app: FastifyInstance) {
   app.post("/households", async (req, reply) => {
+    if (config.authMode === "google") {
+      const session=await sessionIdentity(req);if(!session) return reply.code(401).send({error:"Sign in with Google first"});
+      if(!requireCsrf(req,reply,session)) return;
+      const parsed=HouseholdBody.omit({email:true,displayName:true}).safeParse(req.body);
+      if(!parsed.success) return reply.code(400).send({error:"Enter a valid household name and timezone"});
+      try {
+        const created=await pool.query<{id:string}>("select create_authenticated_household($1,$2,$3,$4) as id",[tokenHash(cookieToken(req)!),parsed.data.name,parsed.data.timezone,parsed.data.unitSystem]);
+        return reply.code(201).send({id:created.rows[0]!.id,email:session.email});
+      } catch(error) {
+        if(error instanceof Error && "code" in error && error.code==="23505") return reply.code(409).send({error:"You already belong to a household"});
+        throw error;
+      }
+    }
     if (config.authMode !== "dev") return reply.code(501).send({ error: "Configure an identity provider before creating households" });
     const body = HouseholdBody.safeParse(req.body);
     if (!body.success) return reply.code(400).send({ error: "Enter a valid email, your name, and household name", details: body.error.issues });

@@ -32,6 +32,15 @@
   .snapshot { border-right: 1px solid var(--line); overflow-y: auto; padding: 20px 22px 32px; background: var(--sheet); }
   .main { display: grid; grid-template-rows: auto 1fr auto; min-height: 0; }
   header { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; padding: 12px 20px; border-bottom: 1px solid var(--line); }
+  #chatSession { max-width: min(360px, 70vw); padding: 6px 10px; border: 1px solid var(--line); border-radius: var(--r-sm); background: var(--sheet); color: var(--ink); color-scheme: light; }
+  #chatSession option { background: var(--sheet); color: var(--ink); }
+  @media (prefers-color-scheme: dark) { #chatSession { color-scheme: dark; } }
+  .upcoming-notice { flex-basis: 100%; padding: 8px 12px; border-left: 3px solid var(--pen); border-radius: var(--r-sm); background: var(--pen-wash); color: var(--muted); font-size: 14px; }
+  .upcoming-notice > span { font-weight: 600; }
+  .upcoming-notice > button { float: right; }
+  .calendar-request { margin: 12px 0; font-size: 15px; }
+  .calendar-options { display: flex; gap: 12px; flex-wrap: wrap; margin-top: 8px; }
+  .calendar-options select { background: var(--sheet); color: var(--ink); border: 1px solid var(--line); border-radius: var(--r-sm); }
   .household-title { flex-basis: 100%; margin: 0; font-size: 20px; font-weight: 700; overflow-wrap: anywhere; }
   .who { display: flex; gap: 6px; flex-wrap: wrap; }
   .who button { border: 1px solid var(--line); background: transparent; border-radius: 999px; padding: 4px 14px; }
@@ -156,6 +165,8 @@
   <form class="signin" id="signinForm">
     <h1>Household Health</h1>
     <p id="signinHint">Sign in with your household email, or create a household to get started.</p>
+    <button class="btn primary" type="button" id="googleSignin" hidden>Sign in with Google</button>
+    <div id="devSignin">
     <label for="email">Email</label>
     <input id="email" type="email" autocomplete="email" required>
     <div id="householdFields" hidden>
@@ -166,6 +177,7 @@
     </div>
     <button class="btn primary" id="signinSubmit" type="submit">Sign in</button>
     <button class="linkish" id="toggleHousehold" type="button">Create a household</button>
+    </div>
     <p id="signinError" class="error" role="alert"></p>
   </form>
 </div>
@@ -182,14 +194,18 @@
       <div class="who" id="who" role="group" aria-label="Who is this about"></div>
       <button class="linkish" id="addMember" type="button" hidden>Add member</button>
       <span class="spacer"></span>
+      <label>Saved chats <select id="chatSession"><option value="" disabled selected>Open a saved chat</option></select></label>
+      <button class="linkish" id="newChat" type="button">New chat</button>
+      <span id="sessionError" role="alert" class="error"></span>
       <button class="linkish show-snapshot" id="openSnapshot" type="button">Snapshot</button>
       <button class="linkish" id="openActivity" type="button" hidden>Activity</button>
       <button class="linkish" id="openLabs" type="button">Reports</button>
       <button class="linkish" id="openRecords" type="button">Records</button>
       <button class="linkish" id="signout" type="button">Sign out</button>
+      <div id="upcomingNotice" class="upcoming-notice" aria-label="Upcoming appointments" hidden></div>
     </header>
 
-    <div class="log" id="log" aria-live="polite"><div class="log-inner" id="logInner"></div></div>
+    <div class="log" id="log" aria-live="polite"><div id="logInner"></div></div>
 
     <div class="composer">
       <form id="composer">
@@ -201,6 +217,7 @@
   </section>
 </div>
 
+<dialog id="setupHousehold" aria-labelledby="setupTitle"><div class="head"><h2 id="setupTitle">Create your household</h2></div><form id="setupForm" class="profile-form"><p>You’re signed in with Google. Give your household a name to get started.</p><label>Household name<input id="setupName" maxlength="200" required autocomplete="organization"></label><p id="setupError" class="error" role="alert"></p><button class="btn primary" type="submit">Create household</button><button class="linkish" id="setupSignout" type="button">Sign out</button></form></dialog>
 <dialog id="memberDialog" aria-labelledby="memberTitle">
   <div class="head"><h2 id="memberTitle">Add household member</h2><button class="linkish" id="closeMember" type="button">Close</button></div>
   <form id="memberForm" class="profile-form">
@@ -228,15 +245,24 @@
 <dialog id="labsDialog" aria-labelledby="labsTitle"><div class="head"><h2 id="labsTitle">Reports</h2><button class="linkish" id="closeLabs" type="button">Close</button></div><div id="labsBody" style="padding:20px"></div></dialog>
 <script>
 const $ = (id) => document.getElementById(id);
-const state = { email: localStorage.getItem("hh.email"), me: null, memberId: null, history: [], conversationId: crypto.randomUUID() };
-let chatBusy = false;
+const state = { auth: null, email: localStorage.getItem("hh.email"), me: null, memberId: null, chats: new Map(), sessionKeys: new Map() };
+let displayedChat = null;
 
+function authHeaders() {
+  return state.auth?.mode === "dev" ? {"x-dev-user":state.email ?? ""} : state.auth?.csrfToken ? {"x-csrf-token":state.auth.csrfToken} : {};
+}
+async function authenticatedFetch(url, options) {
+  const response = await fetch(url, options);
+  if (response.status === 401 && state.auth?.mode === "google") location.assign("/");
+  return response;
+}
+window.addEventListener("pageshow", event => { if (event.persisted) location.reload(); });
 async function api(path, opts = {}) {
-  const res = await fetch("/api" + path, {
+  const res = await authenticatedFetch("/api" + path, {
     ...opts,
     headers: {
       ...(opts.body != null ? { "content-type": "application/json" } : {}),
-      "x-dev-user": state.email ?? "",
+      ...authHeaders(),
       ...(opts.headers || {}),
     },
   });
@@ -288,7 +314,29 @@ $("signinForm").addEventListener("submit", async (e) => {
   catch (err) { $("signinError").textContent = err.message; }
   finally { $("signinSubmit").disabled = $("toggleHousehold").disabled = false; }
 });
-$("signout").onclick = () => { localStorage.removeItem("hh.email"); location.reload(); };
+async function signOut() {
+  try { await api("/auth/logout",{method:"POST"}); localStorage.removeItem("hh.email"); location.assign("/"); }
+  catch(error) { alert(error.message); }
+}
+$("signout").onclick = $("setupSignout").onclick = signOut;
+$("googleSignin").onclick = () => location.assign(state.auth.loginUrl);
+$("setupForm").onsubmit = async event => {
+  event.preventDefault(); const button=event.target.querySelector('[type="submit"]');button.disabled=true;
+  try { await api("/households",{method:"POST",body:JSON.stringify({name:$("setupName").value.trim(),timezone:Intl.DateTimeFormat().resolvedOptions().timeZone})});$("setupHousehold").close();await boot(); }
+  catch(error) { $("setupError").textContent=error.message; }
+  finally {button.disabled=false;}
+};
+async function initializeAuth() {
+  state.auth=await api("/auth/status");
+  const dev=state.auth.mode==="dev";
+  $("devSignin").hidden=!dev;$("googleSignin").hidden=dev;$("googleSignin").disabled=state.auth.mode!=="google"||!state.auth.configured;
+  $("signinHint").textContent=dev ? "Development login: enter your household email." : state.auth.configured ? "Sign in with Google to access your household." : "Google sign-in has not been configured yet.";
+  if(!dev) { state.email=null;localStorage.removeItem("hh.email"); }
+  if(new URLSearchParams(location.search).has('auth_error')) { $("signinError").textContent="Google sign-in could not be completed. Try again. Existing accounts need a matching Google-verified email.";history.replaceState(null,'','/'); }
+  if(state.auth.needsHousehold) { $("signin").hidden=true;$("setupHousehold").showModal();return; }
+  if(state.auth.user || (dev&&state.email)) { try { await boot();return; } catch(error) { $("signinError").textContent=error.message; } }
+  $("signin").hidden=false;
+}
 
 async function boot() {
   state.me = await api("/me");
@@ -296,7 +344,7 @@ async function boot() {
   $("signin").hidden = true; $("app").hidden = false;
   $("openActivity").hidden = state.me.user.role !== "owner";
   $("addMember").hidden = state.me.user.role === "viewer";
-  renderWho(); welcome(); refreshSnapshot(); $("input").focus();
+  state.chats.clear(); state.sessionKeys.clear(); displayedChat = null; renderWho(); showChat(); refreshSnapshot(); upcomingDismissed = false; refreshUpcoming(); $("input").focus();
 }
 
 function renderWho() {
@@ -305,7 +353,8 @@ function renderWho() {
     `<button type="button" data-id="${m.id}" aria-pressed="${m.id === state.memberId}">${esc(m.name)}</button>`).join("");
   $("who").querySelectorAll("button").forEach((b) => b.onclick = () => selectMember(b.dataset.id));
   $("input").disabled = !state.memberId;
-  $("send").disabled = !state.memberId || chatBusy;
+  $("send").disabled = !state.memberId || activeChat().busy || activeChat().loading;
+  $("newChat").disabled = $("chatSession").disabled = !state.memberId;
   $("openRecords").disabled = !state.memberId;
   $("openLabs").disabled = !state.memberId;
   $("input").placeholder = state.memberId ? "Record something or ask a question" : "Add a household member to get started";
@@ -328,7 +377,7 @@ $("memberForm").addEventListener("submit", async (e) => {
       eyeColor: $("memberEyes").value.trim() || null,
     }) });
     state.me.members.push(m); state.memberId = m.id;
-    renderWho(); await refreshSnapshot(); $("memberDialog").close();
+    renderWho(); showChat(); await refreshSnapshot(); $("memberDialog").close();
     add(`${esc(m.name)} added to your household. You can now record their health information.`, "msg bot");
     $("input").focus();
   } catch (err) { $("memberError").textContent = err.message; }
@@ -336,14 +385,16 @@ $("memberForm").addEventListener("submit", async (e) => {
 });
 function selectMember(id) {
   if (id === state.memberId) return;
-  state.memberId = id; renderWho(); refreshSnapshot();
+  state.memberId = id; renderWho(); showChat(); refreshSnapshot();
 }
 
 // ───── snapshot ─────
 async function refreshSnapshot() {
   if (!state.memberId) { $("snapshotBody").innerHTML = `<h1>Your household</h1><p class="empty">No members yet. ${state.me.user.role === "viewer" ? "Ask a household owner or editor to add a member." : "Choose Add member to create the first profile."}</p>`; return; }
+  const requestedMember = state.memberId;
   try {
-    const s = await api(`/members/${state.memberId}/snapshot`);
+    const s = await api(`/members/${requestedMember}/snapshot`);
+    if (requestedMember !== state.memberId) return;
     const age = s.profile.dateOfBirth ? ageFrom(s.profile.dateOfBirth) : null;
     const list = (items, fn, empty) => items.length ? `<ul>${items.map(fn).join("")}</ul>` : `<p class="empty">${empty}</p>`;
     $("snapshotBody").innerHTML = `
@@ -357,7 +408,7 @@ async function refreshSnapshot() {
       ${list(s.vitals, (v) => `<li>${esc(v.name)}: ${esc(v.value)}<small>${esc(v.at)}</small></li>`, "No readings yet")}
       <h2>Coming up</h2>
       ${list(s.upcoming, (a) => `<li>${esc(a.at)}<small>${esc([a.with, a.location].filter(Boolean).join(", "))}</small></li>`, "No upcoming appointments")}`;
-  } catch (err) { $("snapshotBody").innerHTML = `<p class="error">${esc(err.message)}</p>`; }
+  } catch (err) { if (requestedMember !== state.memberId) return; $("snapshotBody").innerHTML = `<p class="error">${esc(err.message)}</p>`; }
 }
 function ageFrom(dob) {
   const d = new Date(dob + "T00:00:00"), n = new Date();
@@ -369,22 +420,46 @@ $("openSnapshot").onclick = () => $("snapshot").classList.add("open");
 $("closeSnapshot").onclick = () => $("snapshot").classList.remove("open");
 
 // ───── conversation ─────
-function add(html, cls) {
+function chatFor(memberId, key = state.sessionKeys.get(memberId)) {
+  if (!key) { key = crypto.randomUUID(); state.sessionKeys.set(memberId, key); }
+  const cacheKey = `${memberId}:${key}`;
+  if (!state.chats.has(cacheKey)) {
+    const node = document.createElement("div"); node.className = "log-inner";
+    state.chats.set(cacheKey, { memberId, node, history: [], conversationId: key, loading: false, restored: false, busy: false, draft: "", scrollTop: 0, initialized: false });
+  }
+  return state.chats.get(cacheKey);
+}
+function activeChat() { return chatFor(state.memberId); }
+function showChat() {
+  const chat = activeChat();
+  if (displayedChat && displayedChat !== chat) {
+    displayedChat.draft = $("input").value;
+    displayedChat.scrollTop = $("log").scrollTop;
+  }
+  $("logInner").replaceChildren(chat.node);
+  displayedChat = chat;
+  if (!chat.initialized) { chat.initialized = true; welcome(chat); }
+  $("input").value = chat.draft; grow();
+  $("log").scrollTop = chat.scrollTop;
+  $("send").disabled = !state.memberId || chat.busy || chat.loading;
+  $("sessionError").textContent = ""; refreshSessionList();
+}
+function add(html, cls, chat = activeChat()) {
   const el = document.createElement("div");
   el.className = cls; el.innerHTML = html;
-  $("logInner").appendChild(el);
-  $("log").scrollTop = $("log").scrollHeight;
+  chat.node.appendChild(el);
+  if (chat === displayedChat) $("log").scrollTop = $("log").scrollHeight;
   return el;
 }
-function welcome() {
-  if (!state.memberId) {
-    add(state.me.user.role === "viewer" ? "Your household has no members yet. Ask an owner or editor to add one." : "Welcome! Choose Add member to create a profile for yourself or someone in your household.", "msg bot welcome");
+function welcome(chat) {
+  if (!chat.memberId) {
+    add(state.me.user.role === "viewer" ? "Your household has no members yet. Ask an owner or editor to add one." : "Welcome! Choose Add member to create a profile for yourself or someone in your household.", "msg bot welcome", chat);
     return;
   }
-  const name = member()?.name ?? "them";
+  const name = state.me.members.find(m => m.id === chat.memberId)?.name ?? "them";
   const examples = [`Weight 32.4 kg this morning`, `Started amoxicillin 250 mg twice a day for 10 days`, `Dentist next Tuesday at 3:30 with Dr. Patel`, `What is ${name} taking right now?`];
-  const el = add(`<p>Tell me what happened in your own words and I'll get it ready to save, or ask about anything recorded. Try:</p>
-    <ul>${examples.map((x) => `<li><button type="button">${esc(x)}</button></li>`).join("")}</ul>`, "msg bot welcome");
+  const el = add(`<p>This conversation is for <strong>${esc(name)}</strong>. Tell me what happened to get it ready to save, or ask about their records. Try:</p>
+    <ul>${examples.map((x) => `<li><button type="button">${esc(x)}</button></li>`).join("")}</ul>`, "msg bot welcome", chat);
   el.querySelectorAll("button").forEach((b) => b.onclick = () => { $("input").value = b.textContent; $("input").focus(); grow(); });
 }
 
@@ -392,61 +467,63 @@ const input = $("input");
 function grow() { input.style.height = "auto"; input.style.height = Math.min(input.scrollHeight, 180) + "px"; }
 input.addEventListener("input", grow);
 input.addEventListener("keydown", (e) => {
-  if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { const save = document.querySelector(".entry:not(.closed):not(.saved) .primary"); if (save) { e.preventDefault(); save.click(); return; } }
+  if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { const save = activeChat().node.querySelector(".entry:not(.closed):not(.saved) .primary"); if (save) { e.preventDefault(); save.click(); return; } }
   if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); $("composer").requestSubmit(); }
 });
 
 $("composer").addEventListener("submit", async (e) => {
   e.preventDefault();
   const message = input.value.trim();
-  if (!message || chatBusy || !state.memberId) return;
-  input.value = ""; grow();
+  if (!message || activeChat().busy || activeChat().loading || !state.memberId) return;
+  input.value = ""; activeChat().draft = ""; grow();
   await sendPrompt(message);
 });
 
 async function sendPrompt(message, context = {
-  memberId: state.memberId, conversationId: state.conversationId, history: state.history.map((turn) => ({ ...turn })),
+  memberId: state.memberId, conversationId: activeChat().conversationId, history: activeChat().history.map((turn) => ({ ...turn })),
 }) {
-  if (chatBusy) return;
-  chatBusy = true;
-  const bubble = add(`<div>${esc(message)}</div><button class="linkish rerun" type="button" aria-label="Run this message again">Run again</button>`, "msg user");
+  const chat = chatFor(context.memberId, context.conversationId);
+  if (chat.busy || chat.loading || !state.me.members.some(m => m.id === chat.memberId)) return;
+  chat.busy = true;
+  const bubble = add(`<div>${esc(message)}</div><button class="linkish rerun" type="button" aria-label="Run this message again">Run again</button>`, "msg user", chat);
   bubble.querySelector(".rerun").onclick = () => sendPrompt(message, context);
-  const wait = add("Working on it…", "msg bot thinking");
-  $("send").disabled = true;
-  document.querySelectorAll(".rerun").forEach((button) => button.disabled = true);
+  const wait = add("Working on it…", "msg bot thinking", chat);
+  if (chat === displayedChat) $("send").disabled = true;
+  chat.node.querySelectorAll(".rerun").forEach(button => button.disabled = true);
   try {
     const r = await api("/chat", { method: "POST", body: JSON.stringify({ message, ...context }) });
     wait.remove();
-    state.history.push({ role: "user", content: message });
-    // Keep a retry attached to the member resolved for the original message.
-    if (r.memberId) context.memberId = r.memberId;
-    if (r.memberId && r.memberId !== state.memberId) selectMember(r.memberId);
-    render(r);
+    chat.history.push({ role: "user", content: message });
+    render(r, chat);
+    refreshSessionList();
   } catch (err) {
     wait.className = "msg bot error"; wait.textContent = err.message;
   } finally {
-    chatBusy = false;
-    $("send").disabled = !state.memberId;
-    document.querySelectorAll(".rerun").forEach((button) => button.disabled = false);
-    input.focus();
+    chat.busy = false;
+    chat.node.querySelectorAll(".rerun").forEach(button => button.disabled = false);
+    if (chat === displayedChat) { $("send").disabled = !state.memberId; input.focus(); }
   }
 }
 
-function remember(text) { state.history.push({ role: "assistant", content: text }); state.history = state.history.slice(-12); }
+function remember(text, chat) { chat.history.push({ role: "assistant", content: text.slice(0,4000) }); chat.history = chat.history.slice(-12); }
 
-function render(r) {
+function render(r, chat) {
   if (r.type === "answer") {
     const src = r.sources?.length ? `<details class="sources"><summary>Based on ${r.sources.length} record${r.sources.length > 1 ? "s" : ""}</summary><ul>${r.sources.map((s) => `<li>${["reports", "lab_reports"].includes(s.table) ? `<button class="linkish" type="button" data-lab-source="${esc(s.id)}">${esc(s.label)}</button>` : esc(s.label)}</li>`).join("")}</ul></details>` : "";
-    add(md(r.text) + src, "msg bot"); remember(r.text);
+    add(md(r.text) + src, "msg bot", chat); remember(r.text, chat);
   } else if (r.type === "proposal") {
-    renderEntry(r); remember("Ready to save: " + r.items.map((i) => i.display).join("; "));
+    renderEntry(r, chat); remember((r.entryStatus && r.entryStatus !== "pending" ? `Entry ${r.entryStatus}: ` : "Ready to save: ") + r.items.map((i) => i.display).join("; "), chat);
   } else {
-    add(md(r.text), "msg bot"); remember(r.text);
+    add(md(r.text), "msg bot", chat); remember(r.text, chat);
   }
 }
 
-function renderEntry(r) {
-  document.querySelectorAll(".entry:not(.saved):not(.closed)").forEach((el) => {
+function renderEntry(r, chat) {
+  if (r.entryStatus && r.entryStatus !== "pending") {
+    add(`<h3>${esc(r.entryStatus === "confirmed" ? "Saved" : r.entryStatus)} for ${esc(state.me.members.find(m => m.id === r.memberId)?.name)}</h3><ol>${r.items.map(item => `<li>${esc(item.display)}</li>`).join('')}</ol><p class="hint">Use Records to edit or delete saved information.</p>`, "entry closed", chat);
+    return;
+  }
+  chat.node.querySelectorAll(".entry:not(.saved):not(.closed)").forEach((el) => {
     el.classList.add("closed");
     el.querySelectorAll(".actions button").forEach((button) => button.disabled = true);
   });
@@ -454,16 +531,30 @@ function renderEntry(r) {
   const el = add(`
     <h3>Ready to save for ${esc(who)}</h3>
     <ol>${r.items.map((i) => `<li>${esc(i.display)}${i.assumptions.map((a) => `<span class="assume">${esc(a)}</span>`).join("")}</li>`).join("")}</ol>
+    ${r.items.some(item => item.kind === "appointment") ? `<div class="calendar-request"><p>Add a calendar invite for this appointment?</p><label><input type="checkbox" class="calendar-opt-in"> Yes, download a calendar invite after saving</label><div class="calendar-options" hidden><label>Reminder <select class="calendar-reminder"><option value="1440">1 day before</option><option value="60">1 hour before</option><option value="15">15 minutes before</option></select></label><label>Calendar duration <select class="calendar-duration"><option value="30">30 minutes</option><option value="60" selected>1 hour</option><option value="90">90 minutes</option><option value="120">2 hours</option></select></label></div><p class="hint">Import the downloaded invite into your calendar to receive reminders. Later app changes won’t update the calendar automatically.</p></div>` : ''}
     <div class="actions">
       <button class="btn primary" type="button">Save</button>
       <button class="btn" type="button" data-act="discard">Discard</button>
       <span class="hint">To change something, just reply with the correction.</span>
-    </div>`, "entry");
-  const [save, discard] = el.querySelectorAll("button");
+    </div>`, "entry", chat);
+  const calendarChoice = el.querySelector('.calendar-opt-in');
+  if (calendarChoice) calendarChoice.onchange = () => { el.querySelector('.calendar-options').hidden = !calendarChoice.checked; };
+  const [save, discard] = el.querySelectorAll(".actions button");
   save.onclick = async () => {
     save.disabled = discard.disabled = true;
     try {
-      await api(`/entries/${r.pendingId}/confirm`, { method: "POST" });
+      const wantsInvite = calendarChoice?.checked;
+      const reminder = el.querySelector('.calendar-reminder')?.value;
+      const duration = el.querySelector('.calendar-duration')?.value;
+      const confirmed = await api(`/entries/${r.pendingId}/confirm`, { method: "POST" });
+      el.querySelector('.calendar-request')?.remove();
+      if (wantsInvite && confirmed.appointments?.length) {
+        const downloads = document.createElement('div'); downloads.className = 'calendar-downloads';
+        downloads.innerHTML = `<p class="hint">Import the invite into your calendar to receive reminders.</p>` + confirmed.appointments.map((id, index) => `<button class="linkish" type="button" data-invite="${id}">Download calendar invite${confirmed.appointments.length > 1 ? ' ' + (index + 1) : ''}</button>`).join('');
+        el.append(downloads);
+        downloads.querySelectorAll('[data-invite]').forEach(button => button.onclick = () => downloadCalendar(button.dataset.invite, reminder, duration).catch(error => add(esc(error.message), 'msg bot error', chat)));
+        if (confirmed.appointments.length === 1) downloadCalendar(confirmed.appointments[0], reminder, duration).catch(error => add(esc(error.message), 'msg bot error', chat));
+      }
       el.classList.add("saved");
       el.querySelector("h3").textContent = `Saved for ${who}`;
       el.querySelector(".actions").innerHTML = `<button class="btn" type="button">Undo</button><span class="hint">Edit or delete records anytime from Records.</span>`;
@@ -472,16 +563,17 @@ function renderEntry(r) {
         undo.disabled = true;
         try { await api(`/entries/${r.pendingId}/undo`, { method: "POST" });
               el.classList.remove("saved"); el.classList.add("closed"); el.querySelector("h3").textContent = "Undone. Nothing was kept.";
-              el.querySelector(".actions").remove(); refreshSnapshot(); }
-        catch (err) { undo.disabled = false; add(esc(err.message), "msg bot error"); }
+              el.querySelector(".actions").remove(); el.querySelector(".calendar-downloads")?.remove(); refreshUpcoming(); if (chat === displayedChat) refreshSnapshot(); }
+        catch (err) { undo.disabled = false; add(esc(err.message), "msg bot error", chat); }
       };
-      remember("Saved."); refreshSnapshot();
-    } catch (err) { save.disabled = discard.disabled = false; add(esc(err.message), "msg bot error"); }
+      refreshUpcoming();
+      remember("Saved.", chat); if (chat === displayedChat) refreshSnapshot();
+    } catch (err) { save.disabled = discard.disabled = false; add(esc(err.message), "msg bot error", chat); }
   };
   discard.onclick = async () => {
     await api(`/entries/${r.pendingId}/discard`, { method: "POST" }).catch(() => {});
-    el.classList.add("closed"); el.querySelector("h3").textContent = "Discarded"; el.querySelector(".actions").remove();
-    remember("Discarded.");
+    el.classList.add("closed"); el.querySelector("h3").textContent = "Discarded"; el.querySelector(".actions").remove(); el.querySelector(".calendar-request")?.remove();
+    remember("Discarded.", chat);
   };
 }
 
@@ -570,9 +662,10 @@ async function loadRecords() {
         const r = row.record;
         const date = r.measured_at ?? r.starts_at ?? r.start_date;
         const summary = [r.status, r.dose_value != null && `${r.dose_value} ${r.dose_unit ?? ""}`, r.frequency, r.reaction, r.severity, date && new Date(date).toLocaleString()].filter(Boolean).join(" · ");
-        return `<div class="record-item"><strong>${esc(recordTitle(row))}</strong><p>${esc(summary)}</p>${writable ? `<div class="actions"><button class="linkish" data-edit="${row.index}" type="button">Edit</button><button class="linkish error" data-delete="${row.index}" type="button">Delete</button></div>` : ""}</div>`;
+        return `<div class="record-item"><strong>${esc(recordTitle(row))}</strong><p>${esc(summary)}</p>${row.kind === "appointments" && r.status === "scheduled" ? `<button class="linkish" type="button" data-record-calendar="${r.id}">Calendar invite</button>` : ''}${writable ? `<div class="actions"><button class="linkish" data-edit="${row.index}" type="button">Edit</button><button class="linkish error" data-delete="${row.index}" type="button">Delete</button></div>` : ""}</div>`;
       }).join("") || `<p class="empty">None recorded</p>`);
     }).join("");
+    $("recordsBody").querySelectorAll("[data-record-calendar]").forEach(button => button.onclick = () => downloadCalendar(button.dataset.recordCalendar).catch(error => alert(error.message)));
     $("recordsBody").querySelectorAll("[data-edit]").forEach((button) => button.onclick = () => editRecord(recordRows[Number(button.dataset.edit)]));
     $("recordsBody").querySelectorAll("[data-delete]").forEach((button) => button.onclick = async () => {
       const row = recordRows[Number(button.dataset.delete)];
@@ -618,7 +711,7 @@ function editRecord(row) {
 async function refreshRecordState() {
   state.me = await api("/me");
   if (!state.me.members.some((m) => m.id === state.memberId)) state.memberId = state.me.members[0]?.id ?? null;
-  renderWho(); await refreshSnapshot();
+  renderWho(); showChat(); await refreshSnapshot(); refreshUpcoming();
   if (state.memberId) await loadRecords();
   else { $("recordsDialog").close(); }
 }
@@ -631,7 +724,7 @@ const labWritable = () => state.me.user.role !== "viewer";
 $("openLabs").onclick = () => { labMemberId = state.memberId; $("labsDialog").showModal(); loadLabs(); };
 $("closeLabs").onclick = () => $("labsDialog").close();
 async function downloadLab(id, filename) {
-  const res = await fetch(`/api/reports/${id}/original`, { headers: { "x-dev-user": state.email } });
+  const res = await authenticatedFetch(`/api/reports/${id}/original`, { headers: authHeaders() });
   if (!res.ok) throw new Error("Could not download the original report");
   const url = URL.createObjectURL(await res.blob());
   const a = document.createElement("a"); a.href = url; a.download = filename || "report.txt"; a.click();
@@ -705,9 +798,64 @@ function reviewLab() {
 }
 document.addEventListener('click', e => { const b = e.target.closest('[data-lab-source]'); if (b) openLab(b.dataset.labSource); });
 
+async function refreshSessionList(memberId = state.memberId) {
+  if (!memberId) return;
+  try {
+    const sessions = await api(`/members/${memberId}/chats`);
+    if (memberId !== state.memberId) return;
+    const current = activeChat();
+    $("chatSession").innerHTML = `<option value="" disabled>${sessions.length ? "Open a saved chat" : "No saved chats yet"}</option>` + sessions.map(session => `<option value="${esc(session.conversationId)}">${esc(session.title)} — ${esc(new Date(session.updatedAt).toLocaleString())}</option>`).join("");
+    $("chatSession").value = sessions.some(session => session.conversationId === current.conversationId) ? current.conversationId : "";
+  } catch (error) { if (memberId === state.memberId) $("sessionError").textContent = error.message; }
+}
+$("newChat").onclick = () => {
+  state.sessionKeys.set(state.memberId, crypto.randomUUID());
+  showChat(); renderWho();
+};
+$("chatSession").onchange = async () => {
+  const key = $("chatSession").value;
+  if (!key) return;
+  const memberId = state.memberId, chat = chatFor(memberId, key);
+  state.sessionKeys.set(memberId, key);
+  if (chat.restored || chat.history.length || chat.busy) { showChat(); renderWho(); return; }
+  chat.loading = true; showChat(); renderWho();
+  try {
+    const saved = await api(`/members/${memberId}/chats/${encodeURIComponent(key)}`);
+    chat.node.replaceChildren(); chat.history = []; chat.initialized = true;
+    for (const turn of saved.turns) {
+      const context = { memberId, conversationId: key, history: turn.historyBefore };
+      const bubble = add(`<div>${esc(turn.message)}</div><button class="linkish rerun" type="button" aria-label="Run this message again">Run again</button>`, "msg user", chat);
+      bubble.querySelector('.rerun').onclick = () => sendPrompt(turn.message, context);
+      chat.history.push({role:'user',content:turn.message}); render(turn.response, chat);
+    }
+    chat.restored = true;
+  } catch (error) { add(esc(error.message), "msg bot error", chat); }
+  finally { chat.loading = false; if (chat === displayedChat) { renderWho(); $("log").scrollTop = $("log").scrollHeight; } }
+};
+
+let upcomingDismissed = false;
+async function refreshUpcoming() {
+  try {
+    const result = await api('/appointments/upcoming');
+    const notice = $("upcomingNotice");
+    notice.hidden = upcomingDismissed || !result.appointments.length;
+    if (notice.hidden) return;
+    notice.innerHTML = `<span>Coming up in the next 7 days</span><button class="linkish" type="button" id="dismissUpcoming" aria-label="Dismiss upcoming appointment notice">Dismiss</button>` + result.appointments.map(appointment => `<div><button class="linkish" type="button" data-upcoming-member="${appointment.memberId}">${esc(appointment.memberName)}</button> · ${esc(appointment.at)}${appointment.with ? ' · ' + esc(appointment.with) : ''} <button class="linkish" type="button" data-calendar-id="${appointment.id}">Calendar invite</button></div>`).join('') + (result.hasMore ? '<small>More appointments are listed in each member’s snapshot.</small>' : '');
+    $("dismissUpcoming").onclick = () => { upcomingDismissed = true; notice.hidden = true; };
+    notice.querySelectorAll('[data-upcoming-member]').forEach(button => button.onclick = () => selectMember(button.dataset.upcomingMember));
+    notice.querySelectorAll('[data-calendar-id]').forEach(button => button.onclick = () => downloadCalendar(button.dataset.calendarId).catch(error => alert(error.message)));
+  } catch (error) { $("upcomingNotice").hidden = true; }
+}
+async function downloadCalendar(id, reminderMinutes = '1440', durationMinutes = '60') {
+  const response = await authenticatedFetch(`/api/appointments/${id}/calendar?reminderMinutes=${reminderMinutes}&durationMinutes=${durationMinutes}`, {headers:authHeaders()});
+  if (!response.ok) { const body = await response.json().catch(() => ({})); throw new Error(body.error || 'Could not download the calendar invite'); }
+  const url = URL.createObjectURL(await response.blob());
+  const link = document.createElement('a'); link.href = url; link.download = 'appointment.ics'; link.click();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
 // ───── start ─────
-if (state.email) boot().catch(() => { $("signin").hidden = false; });
-else $("signin").hidden = false;
+initializeAuth().catch(() => { $("signin").hidden=false;$("devSignin").hidden=true;$("signinError").textContent="Sign-in is unavailable. Please try again."; });
 </script>
 </body>
 </html>

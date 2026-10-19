@@ -107,10 +107,10 @@ export function buildReadTools(ctx: TenantContext, hh: Household, memberId: stri
       .orderBy(range === "past" ? desc(appointments.startsAt) : asc(appointments.startsAt)).limit(limit));
     track("get_appointments", { when: range, limit }, rows.map((r) => ({ table: "appointments", id: r.id, label: `Appointment ${when(r.startsAt, false)}` })));
     if (!rows.length) return `No ${range === "all" ? "" : range + " "}appointments recorded.`;
-    return JSON.stringify(rows.map((r) => ({ id: r.id, at: when(r.startsAt), provider: r.providerName, specialty: r.specialty, location: r.location, reason: r.reason, status: r.status, outcome: r.outcomeNotes })));
+    return JSON.stringify(rows.map((r) => ({ id: r.id, member_id: r.memberId, at: when(r.startsAt), provider: r.providerName, specialty: r.specialty, location: r.location, reason: r.reason, status: r.status, outcome: r.outcomeNotes })));
   }, {
     name: "get_appointments",
-    description: "Appointments. 'upcoming' sorted soonest first; 'past' most recent first.",
+    description: "Appointments explicitly associated with the selected member by member_id. Every returned appointment belongs to that member, even if its notes do not repeat the patient's name. 'upcoming' sorted soonest first; 'past' most recent first.",
     schema: z.object({ when: z.enum(["upcoming", "past", "all"]), limit: z.number().int().min(1).max(50) }),
   });
 

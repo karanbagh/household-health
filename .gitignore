@@ -7,3 +7,4 @@ artifacts/
 dist/
 coverage/
 *.log
+.neon
