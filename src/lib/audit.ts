@@ -2,7 +2,9 @@ import { auditLog } from "../db/schema.js";
 import type { Db, TenantContext } from "../db/client.js";
 
 export type AuditAction =
-  | "read" | "ai_query" | "entry_proposed" | "entry_confirmed" | "entry_discarded" | "entry_undone";
+  | "read" | "ai_query" | "entry_proposed" | "entry_confirmed" | "entry_discarded" | "entry_undone"
+  | "invitation_created" | "invitation_resent" | "invitation_revoked" | "access_updated" | "access_removed"
+  | "gmail_connected" | "gmail_disconnected" | "email_sent" | "email_failed" | "email_unknown";
 
 /**
  * App-written audit rows: reads, AI queries, and the entry lifecycle.

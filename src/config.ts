@@ -32,6 +32,7 @@ export const config = {
   host,
   port: Number(process.env.PORT ?? 8080),
   databaseUrl,
+  mail: { encryptionKey: process.env.MAIL_ENCRYPTION_KEY ?? "" },
   authMode: authMode as "google" | "dev" | "disabled",
   google: { clientId: process.env.GOOGLE_CLIENT_ID ?? "", clientSecret: process.env.GOOGLE_CLIENT_SECRET ?? "", origin: appOrigin.origin, secureCookies: appOrigin.protocol === "https:" },
   openai: {

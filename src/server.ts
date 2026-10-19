@@ -13,6 +13,8 @@ import { onboardingRoutes } from "./routes/onboarding.js";
 import { makeLabRoutes } from "./routes/labs.js";
 import { recordRoutes } from "./routes/records.js";
 import { pool } from "./db/client.js";
+import { householdAccessRoutes } from "./routes/household-access.js";
+import { emailRoutes } from "./routes/email.js";
 
 startTracing();
 
@@ -29,6 +31,8 @@ const app = Fastify({
 
 app.register(cookie);
 app.register(authRoutes, {prefix:"/api"});
+app.register(householdAccessRoutes, { prefix: "/api" });
+app.register(emailRoutes, { prefix: "/api" });
 app.addHook("onSend",async(req,reply)=>{if(req.url.startsWith("/api/")) reply.header("Cache-Control","no-store");});
 app.get("/health", async (_req, reply) => {
   reply.header("Cache-Control", "no-store");

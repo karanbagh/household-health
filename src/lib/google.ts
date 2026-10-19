@@ -8,7 +8,7 @@ export interface GoogleProvider {
   verifyCallback(url:URL,transaction:GoogleTransaction):Promise<GoogleIdentity>;
 }
 let discovery:Promise<oidc.Configuration>|undefined;
-async function configuration() {
+export async function googleConfiguration() {
   discovery ??= oidc.discovery(new URL("https://accounts.google.com"),config.google.clientId,config.google.clientSecret,undefined,{timeout:10,execute:[oidc.enableNonRepudiationChecks]}).catch(error=>{discovery=undefined;throw error;});
   return discovery;
 }
@@ -19,10 +19,10 @@ export function verifiedGoogleClaims(claims:Record<string,unknown>):GoogleIdenti
 }
 export const googleProvider:GoogleProvider={
   async authorizationUrl(transaction) {
-    return oidc.buildAuthorizationUrl(await configuration(),{redirect_uri:config.google.origin+"/api/auth/google/callback",scope:"openid email profile",state:transaction.state,nonce:transaction.nonce,code_challenge:await oidc.calculatePKCECodeChallenge(transaction.verifier),code_challenge_method:"S256",prompt:"select_account"}).href;
+    return oidc.buildAuthorizationUrl(await googleConfiguration(),{redirect_uri:config.google.origin+"/api/auth/google/callback",scope:"openid email profile",state:transaction.state,nonce:transaction.nonce,code_challenge:await oidc.calculatePKCECodeChallenge(transaction.verifier),code_challenge_method:"S256",prompt:"select_account"}).href;
   },
   async verifyCallback(url,transaction) {
-    const tokens=await oidc.authorizationCodeGrant(await configuration(),url,{pkceCodeVerifier:transaction.verifier,expectedState:transaction.state,expectedNonce:transaction.nonce,idTokenExpected:true});
+    const tokens=await oidc.authorizationCodeGrant(await googleConfiguration(),url,{pkceCodeVerifier:transaction.verifier,expectedState:transaction.state,expectedNonce:transaction.nonce,idTokenExpected:true});
     const claims=tokens.claims();if(!claims) throw new Error("Missing ID token");
     return verifiedGoogleClaims(claims);
   },

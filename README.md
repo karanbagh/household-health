@@ -99,9 +99,9 @@ Each member has separate chats, including messages, follow-up history, draft inp
 
 Chat turns are automatically stored in PostgreSQL using `chat_sessions` (migration `0007_chat_sessions.sql`). Choose an earlier conversation from **Saved chats** to reopen it and continue with its context, or choose **New chat** to start a separate conversation. Sessions are scoped to the signed-in user and household member. Draft input stays local to the open page. Previously unsaved chats from before this feature cannot be recovered; new completed turns survive refreshes and server restarts.
 
-When saving an appointment, the confirmation card asks whether to download a calendar invite (`.ics`). Opt in to choose a reminder (one day, one hour, or 15 minutes before) and calendar duration (30–120 minutes; default one hour). Import the file into your calendar and enable its notifications to receive reminders. The app does not email invitations or synchronize later changes; update the imported event if you edit, cancel, or delete the appointment.
+When saving an appointment, the confirmation card offers a calendar invite. Opt in to choose a reminder (one day, one hour, or 15 minutes before) and calendar duration (30–120 minutes; default one hour). With Gmail connected, owners/editors can email it to selected household accounts; anyone with household access can download the `.ics` file. Accept/import the event into your calendar and enable its notifications to receive reminders. Later changes are not synchronized; update the calendar event if you edit, cancel, or delete the appointment.
 
-On sign-in, a dismissible notice highlights scheduled appointments across the household within the next seven days, including each member’s name. Cancelled, completed and deleted appointments are excluded. The notice can also download an invite with the default reminder and duration. Calendar exports follow the [iCalendar format](https://www.rfc-editor.org/rfc/rfc5545).
+On sign-in, a dismissible notice highlights scheduled appointments across the household within the next seven days, including each member’s name. Cancelled, completed and deleted appointments are excluded. The notice also opens the calendar invitation options. Calendar exports follow the [iCalendar format](https://www.rfc-editor.org/rfc/rfc5545).
 
 ## Google sign-in setup
 
@@ -198,3 +198,76 @@ through household creation, member creation/update/read, and logout. The regular
 suite also tests report binary storage, vector search, tenant isolation, and calendar
 downloads with synthetic AI responses. These checks do not prove a real Google login
 or an OpenAI response. Delete the disposable branch after verification.
+
+## Household invitations and Gmail
+
+The owner opens **Household access** to connect Gmail, invite a Google account as
+**View only** or **Can add and edit records**, resend/revoke pending invitations,
+change non-owner roles, or remove login access. Health profiles and login accounts
+are separate: adding someone as a member does not give them access to the app.
+An accepted invitation shares the whole household, not only one member's profile.
+
+Invite links expire after seven days and require the invited email's Google login
+and explicit acceptance. Links are single use; resending invalidates the old link.
+Only a SHA-256 token hash is stored. The token travels in the URL fragment (not the
+server URL or request logs) and is kept in session storage only until acceptance or
+dismissal. Invite acceptance never overwrites an existing role or changes ownership.
+Users who belong to multiple households can switch between them in the header.
+Removal takes effect on their next request; existing records and audit history remain.
+
+Email uses the [Gmail HTTPS API](https://developers.google.com/workspace/gmail/api/guides/sending),
+not SMTP. Render's free service blocks standard SMTP ports. Gmail sending is an
+additional owner consent flow; ordinary Google sign-in keeps its basic identity scopes.
+The sender must connect the same Google account they use as the household owner.
+
+### Configure Gmail once
+
+1. Enable the **Gmail API** in the Google Cloud project containing the existing Web
+   OAuth client. In Google Auth Platform's Data Access settings, add
+   `https://www.googleapis.com/auth/gmail.send` (send only, no inbox access).
+2. Add these authorized redirect URIs to that Web client, preserving the existing
+   sign-in callback URIs:
+   - `https://household-health.onrender.com/api/email/gmail/callback`
+   - `http://127.0.0.1:8080/api/email/gmail/callback` for local use.
+3. Run `npm run email:setup-key` to add a random 32-byte base64
+   `MAIL_ENCRYPTION_KEY` to the ignored env file. Privately copy that same value
+   into Render's secret environment settings. Keep it stable and backed up: it
+   encrypts stored Gmail refresh tokens with AES-256-GCM, bound to the household ID.
+4. Apply migration `0009_household_invitations_and_email.sql` with
+   `npm run db:migrate`, build/deploy, sign in as the owner, then open
+   **Household access → Connect Gmail** and approve sending permission yourself.
+   The owner can disconnect the stored mailbox from the same screen.
+
+Only a verified Gmail sender address is exposed through the UI. Refresh tokens are
+encrypted at rest and never returned in an API response or logged. Session-bound
+state, nonce, PKCE, expiration, and single use protect the Gmail connection callback.
+Keep `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, and `MAIL_ENCRYPTION_KEY` server-only.
+
+When Google's OAuth consent screen is in **Testing**, add the sender and family
+accounts as test users. Gmail refresh tokens in this mode expire after seven days,
+requiring **Reconnect Gmail**. For ongoing use, review Google's publishing and
+verification requirements for the sensitive send scope:
+[Google refresh-token rules](https://developers.google.com/identity/protocols/oauth2#expiration)
+and [Gmail scopes](https://developers.google.com/workspace/gmail/api/auth/scopes).
+
+### Appointment emails
+
+After saving an appointment, or from **Records** / **Coming up**, choose
+**Calendar invite**. Select the household accounts to receive it, the reminder,
+and duration, then click **Email invitation**. Owners/editors can send; viewers
+can download the `.ics` file. No recipient is selected automatically. Emails include
+the member name, appointment time, provider and location, not clinical reasons,
+outcomes, or report contents. Each recipient gets a separate MIME message with an
+RFC 5545 calendar attachment using `METHOD:REQUEST`, organizer, attendee and alarm.
+Recipients accept/import it in their own calendar; automatic later synchronization
+and cancellation emails are not implemented.
+
+Sending is explicit, limited to 50 messages per household per hour, and tracked as
+`sending`, `sent`, `failed`, or `unknown`. Reusing the same operation ID does not
+send another email. Gmail acceptance is not proof of inbox delivery. An ambiguous
+network failure is not retried automatically: check Gmail Sent before sending again.
+No background process or scheduled reminder email is required for calendar alarms.
+
+The invitation test suite uses synthetic accounts and simulated Gmail responses;
+it does not send actual mail or prove a live Google consent flow. Run it only on a
+disposable branch, with the same test-bootstrap guards described above.

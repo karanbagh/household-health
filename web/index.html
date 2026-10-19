@@ -131,6 +131,13 @@
   .profile-form label { display: block; margin-bottom: 12px; }
   .profile-form input, .profile-form select { display: block; width: 100%; padding: 9px 12px; border: 1px solid var(--line); border-radius: var(--r-sm); background: var(--sheet); }
   .profile-form .actions { display: flex; gap: 10px; }
+  #inviteForm { padding: 0; display: grid; grid-template-columns: minmax(200px, 1fr) minmax(180px, 1fr) auto; gap: 12px; align-items: end; }
+  #inviteForm label { margin: 0; }
+  #inviteForm p { grid-column: 1 / -1; margin: 0; }
+  #accessBody .hint { color: var(--muted); font-size: 14px; }
+  #accessBody p:empty { display: none; }
+  #accessBody code { overflow-wrap: anywhere; }
+  @media (max-width: 700px) { #inviteForm { grid-template-columns: 1fr; } }
   #recordsBody { padding: 20px; }
   .record-item { border-bottom: 1px solid var(--line); padding: 12px 0; }
   .record-item p { margin: 4px 0; color: var(--muted); font-size: 15px; }
@@ -191,6 +198,7 @@
   <section class="main">
     <header>
       <h1 class="household-title" id="householdTitle"></h1>
+      <label id="householdPickerLabel" hidden>Household <select id="householdPicker"></select></label>
       <div class="who" id="who" role="group" aria-label="Who is this about"></div>
       <button class="linkish" id="addMember" type="button" hidden>Add member</button>
       <span class="spacer"></span>
@@ -199,6 +207,7 @@
       <span id="sessionError" role="alert" class="error"></span>
       <button class="linkish show-snapshot" id="openSnapshot" type="button">Snapshot</button>
       <button class="linkish" id="openActivity" type="button" hidden>Activity</button>
+      <button class="linkish" id="openAccess" type="button" hidden>Household access</button>
       <button class="linkish" id="openLabs" type="button">Reports</button>
       <button class="linkish" id="openRecords" type="button">Records</button>
       <button class="linkish" id="signout" type="button">Sign out</button>
@@ -243,13 +252,18 @@
 </dialog>
 
 <dialog id="labsDialog" aria-labelledby="labsTitle"><div class="head"><h2 id="labsTitle">Reports</h2><button class="linkish" id="closeLabs" type="button">Close</button></div><div id="labsBody" style="padding:20px"></div></dialog>
+<dialog id="accessDialog" aria-labelledby="accessTitle"><div class="head"><h2 id="accessTitle">Household access</h2><button class="linkish" id="closeAccess" type="button">Close</button></div><div id="accessBody" style="padding:20px"></div></dialog>
+<dialog id="acceptInviteDialog" aria-labelledby="acceptInviteTitle"><div class="head"><h2 id="acceptInviteTitle">Join a household</h2></div><div style="padding:20px"><p id="inviteIdentity"></p><p>Accepting gives this account access to the household's shared health records. Use the email address that received the invitation.</p><p id="acceptInviteError" class="error" role="alert"></p><button id="acceptInvite" class="btn primary" type="button">Accept invitation</button><button id="inviteOtherAccount" class="linkish" type="button">Use another Google account</button><button id="dismissInvite" class="linkish" type="button">Not now</button></div></dialog>
+<dialog id="calendarDialog" aria-labelledby="calendarTitle"><div class="head"><h2 id="calendarTitle">Appointment calendar invitation</h2><button class="linkish" id="closeCalendar" type="button">Close</button></div><div id="calendarBody" style="padding:20px"></div></dialog>
 <script>
 const $ = (id) => document.getElementById(id);
-const state = { auth: null, email: localStorage.getItem("hh.email"), me: null, memberId: null, chats: new Map(), sessionKeys: new Map() };
+const inviteFragment = new URLSearchParams(location.hash.slice(1)).get('invite');
+if (/^[A-Za-z0-9_-]{43}$/.test(inviteFragment || '')) { sessionStorage.setItem('hh.invite',inviteFragment); history.replaceState(null,'',location.pathname+location.search); }
+const state = { auth: null, email: localStorage.getItem("hh.email"), me: null, householdId: null, memberId: null, chats: new Map(), sessionKeys: new Map() };
 let displayedChat = null;
 
 function authHeaders() {
-  return state.auth?.mode === "dev" ? {"x-dev-user":state.email ?? ""} : state.auth?.csrfToken ? {"x-csrf-token":state.auth.csrfToken} : {};
+  return { ...(state.auth?.mode === "dev" ? {"x-dev-user":state.email ?? ""} : state.auth?.csrfToken ? {"x-csrf-token":state.auth.csrfToken} : {}), ...(state.householdId ? {'x-household-id':state.householdId} : {}) };
 }
 async function authenticatedFetch(url, options) {
   const response = await fetch(url, options);
@@ -332,20 +346,44 @@ async function initializeAuth() {
   $("devSignin").hidden=!dev;$("googleSignin").hidden=dev;$("googleSignin").disabled=state.auth.mode!=="google"||!state.auth.configured;
   $("signinHint").textContent=dev ? "Development login: enter your household email." : state.auth.configured ? "Sign in with Google to access your household." : "Google sign-in has not been configured yet.";
   if(!dev) { state.email=null;localStorage.removeItem("hh.email"); }
+  if(sessionStorage.getItem('hh.invite') && !state.auth.user) $("signinHint").textContent="You have a household invitation. Sign in with the Google email address that received it.";
   if(new URLSearchParams(location.search).has('auth_error')) { $("signinError").textContent="Google sign-in could not be completed. Try again. Existing accounts need a matching Google-verified email.";history.replaceState(null,'','/'); }
+  if(state.auth.user && sessionStorage.getItem('hh.invite')) { $("signin").hidden=true;$("inviteIdentity").textContent=`Signed in as ${state.auth.user.email}.`;$("acceptInviteDialog").showModal();return; }
   if(state.auth.needsHousehold) { $("signin").hidden=true;$("setupHousehold").showModal();return; }
   if(state.auth.user || (dev&&state.email)) { try { await boot();return; } catch(error) { $("signinError").textContent=error.message; } }
   $("signin").hidden=false;
 }
 
 async function boot() {
+  if(state.auth?.mode === 'google') {
+    state.auth=await api('/auth/status');
+    const choices=state.auth.households || [];
+    const saved=state.householdId || sessionStorage.getItem('hh.household');
+    state.householdId=choices.some(row=>row.id===saved) ? saved : choices[0]?.id || null;
+    if(state.householdId) sessionStorage.setItem('hh.household',state.householdId);
+    $("householdPickerLabel").hidden=choices.length<2;
+    $("householdPicker").innerHTML=choices.map(row=>`<option value="${row.id}">${esc(row.name)}</option>`).join('');
+    $("householdPicker").value=state.householdId || '';
+  }
   state.me = await api("/me");
   state.memberId = state.me.members[0]?.id ?? null;
   $("signin").hidden = true; $("app").hidden = false;
   $("openActivity").hidden = state.me.user.role !== "owner";
+  $("openAccess").hidden = state.me.user.role !== "owner";
   $("addMember").hidden = state.me.user.role === "viewer";
   state.chats.clear(); state.sessionKeys.clear(); displayedChat = null; renderWho(); showChat(); refreshSnapshot(); upcomingDismissed = false; refreshUpcoming(); $("input").focus();
+  const gmailResult=new URLSearchParams(location.search).get('gmail');
+  if(gmailResult && state.me.user.role==='owner') { history.replaceState(null,'','/'); await openAccess(gmailResult==='connected' ? 'Gmail connected.' : 'Gmail was not connected. Check the Gmail API, callback URL, and Google consent settings, then try again.'); }
 }
+$("householdPicker").onchange=async()=>{state.householdId=$("householdPicker").value;sessionStorage.setItem('hh.household',state.householdId);try{await boot();}catch(error){alert(error.message);}};
+$("inviteOtherAccount").onclick=signOut;
+$("acceptInvite").onclick=async()=>{
+  $("acceptInvite").disabled=true;
+  try {const result=await api('/invitations/accept',{method:'POST',body:JSON.stringify({token:sessionStorage.getItem('hh.invite')})});sessionStorage.removeItem('hh.invite');state.householdId=result.householdId;$("acceptInviteDialog").close();await initializeAuth();}
+  catch(error){$("acceptInviteError").textContent=error.message;}
+  finally{$("acceptInvite").disabled=false;}
+};
+$("dismissInvite").onclick=async()=>{sessionStorage.removeItem('hh.invite');$("acceptInviteDialog").close();await initializeAuth();};
 
 function renderWho() {
   $("householdTitle").textContent = state.me.household.name;
@@ -531,7 +569,7 @@ function renderEntry(r, chat) {
   const el = add(`
     <h3>Ready to save for ${esc(who)}</h3>
     <ol>${r.items.map((i) => `<li>${esc(i.display)}${i.assumptions.map((a) => `<span class="assume">${esc(a)}</span>`).join("")}</li>`).join("")}</ol>
-    ${r.items.some(item => item.kind === "appointment") ? `<div class="calendar-request"><p>Add a calendar invite for this appointment?</p><label><input type="checkbox" class="calendar-opt-in"> Yes, download a calendar invite after saving</label><div class="calendar-options" hidden><label>Reminder <select class="calendar-reminder"><option value="1440">1 day before</option><option value="60">1 hour before</option><option value="15">15 minutes before</option></select></label><label>Calendar duration <select class="calendar-duration"><option value="30">30 minutes</option><option value="60" selected>1 hour</option><option value="90">90 minutes</option><option value="120">2 hours</option></select></label></div><p class="hint">Import the downloaded invite into your calendar to receive reminders. Later app changes won’t update the calendar automatically.</p></div>` : ''}
+    ${r.items.some(item => item.kind === "appointment") ? `<div class="calendar-request"><p>Add a calendar invite for this appointment?</p><label><input type="checkbox" class="calendar-opt-in"> Yes, choose calendar recipients after saving</label><div class="calendar-options" hidden><label>Reminder <select class="calendar-reminder"><option value="1440">1 day before</option><option value="60">1 hour before</option><option value="15">15 minutes before</option></select></label><label>Calendar duration <select class="calendar-duration"><option value="30">30 minutes</option><option value="60" selected>1 hour</option><option value="90">90 minutes</option><option value="120">2 hours</option></select></label></div><p class="hint">Email the invitation to household users or download it for your calendar. Later app changes won’t update the calendar automatically.</p></div>` : ''}
     <div class="actions">
       <button class="btn primary" type="button">Save</button>
       <button class="btn" type="button" data-act="discard">Discard</button>
@@ -550,10 +588,10 @@ function renderEntry(r, chat) {
       el.querySelector('.calendar-request')?.remove();
       if (wantsInvite && confirmed.appointments?.length) {
         const downloads = document.createElement('div'); downloads.className = 'calendar-downloads';
-        downloads.innerHTML = `<p class="hint">Import the invite into your calendar to receive reminders.</p>` + confirmed.appointments.map((id, index) => `<button class="linkish" type="button" data-invite="${id}">Download calendar invite${confirmed.appointments.length > 1 ? ' ' + (index + 1) : ''}</button>`).join('');
+        downloads.innerHTML = `<p class="hint">Import the invite into your calendar to receive reminders.</p>` + confirmed.appointments.map((id, index) => `<button class="linkish" type="button" data-invite="${id}">Calendar invitation${confirmed.appointments.length > 1 ? ' ' + (index + 1) : ''}</button>`).join('');
         el.append(downloads);
-        downloads.querySelectorAll('[data-invite]').forEach(button => button.onclick = () => downloadCalendar(button.dataset.invite, reminder, duration).catch(error => add(esc(error.message), 'msg bot error', chat)));
-        if (confirmed.appointments.length === 1) downloadCalendar(confirmed.appointments[0], reminder, duration).catch(error => add(esc(error.message), 'msg bot error', chat));
+        downloads.querySelectorAll('[data-invite]').forEach(button => button.onclick = () => openCalendarDialog(button.dataset.invite, reminder, duration).catch(error => add(esc(error.message), 'msg bot error', chat)));
+        if (confirmed.appointments.length === 1) openCalendarDialog(confirmed.appointments[0], reminder, duration).catch(error => add(esc(error.message), 'msg bot error', chat));
       }
       el.classList.add("saved");
       el.querySelector("h3").textContent = `Saved for ${who}`;
@@ -578,7 +616,7 @@ function renderEntry(r, chat) {
 }
 
 // ───── activity (audit trail) ─────
-const ACTIONS = { create: "Added", update: "Changed", delete: "Removed", read: "Viewed", ai_query: "Asked", entry_proposed: "Drafted", entry_confirmed: "Saved", entry_discarded: "Discarded", entry_undone: "Undid" };
+const ACTIONS = { create: "Added", update: "Changed", delete: "Removed", read: "Viewed", ai_query: "Asked", entry_proposed: "Drafted", entry_confirmed: "Saved", entry_discarded: "Discarded", entry_undone: "Undid", invitation_created:"Invited", invitation_resent:"Resent invitation", invitation_revoked:"Revoked invitation", invitation_accepted:"Accepted invitation", access_updated:"Changed access", access_removed:"Removed access", gmail_connected:"Connected Gmail", gmail_disconnected:"Disconnected Gmail", email_sent:"Sent email", email_failed:"Email failed", email_unknown:"Email not confirmed" };
 const ACTIVITY_FIELDS = {
   members: { full_name: "Name", preferred_name: "Preferred name", date_of_birth: "Date of birth", sex: "Sex", blood_type: "Blood type", eye_color: "Eye color" },
   allergies: { substance: "Allergen", reaction: "Reaction", severity: "Severity", noted_on: "Noted on", status: "Status" },
@@ -665,7 +703,7 @@ async function loadRecords() {
         return `<div class="record-item"><strong>${esc(recordTitle(row))}</strong><p>${esc(summary)}</p>${row.kind === "appointments" && r.status === "scheduled" ? `<button class="linkish" type="button" data-record-calendar="${r.id}">Calendar invite</button>` : ''}${writable ? `<div class="actions"><button class="linkish" data-edit="${row.index}" type="button">Edit</button><button class="linkish error" data-delete="${row.index}" type="button">Delete</button></div>` : ""}</div>`;
       }).join("") || `<p class="empty">None recorded</p>`);
     }).join("");
-    $("recordsBody").querySelectorAll("[data-record-calendar]").forEach(button => button.onclick = () => downloadCalendar(button.dataset.recordCalendar).catch(error => alert(error.message)));
+    $("recordsBody").querySelectorAll("[data-record-calendar]").forEach(button => button.onclick = () => openCalendarDialog(button.dataset.recordCalendar).catch(error => alert(error.message)));
     $("recordsBody").querySelectorAll("[data-edit]").forEach((button) => button.onclick = () => editRecord(recordRows[Number(button.dataset.edit)]));
     $("recordsBody").querySelectorAll("[data-delete]").forEach((button) => button.onclick = async () => {
       const row = recordRows[Number(button.dataset.delete)];
@@ -843,7 +881,7 @@ async function refreshUpcoming() {
     notice.innerHTML = `<span>Coming up in the next 7 days</span><button class="linkish" type="button" id="dismissUpcoming" aria-label="Dismiss upcoming appointment notice">Dismiss</button>` + result.appointments.map(appointment => `<div><button class="linkish" type="button" data-upcoming-member="${appointment.memberId}">${esc(appointment.memberName)}</button> · ${esc(appointment.at)}${appointment.with ? ' · ' + esc(appointment.with) : ''} <button class="linkish" type="button" data-calendar-id="${appointment.id}">Calendar invite</button></div>`).join('') + (result.hasMore ? '<small>More appointments are listed in each member’s snapshot.</small>' : '');
     $("dismissUpcoming").onclick = () => { upcomingDismissed = true; notice.hidden = true; };
     notice.querySelectorAll('[data-upcoming-member]').forEach(button => button.onclick = () => selectMember(button.dataset.upcomingMember));
-    notice.querySelectorAll('[data-calendar-id]').forEach(button => button.onclick = () => downloadCalendar(button.dataset.calendarId).catch(error => alert(error.message)));
+    notice.querySelectorAll('[data-calendar-id]').forEach(button => button.onclick = () => openCalendarDialog(button.dataset.calendarId).catch(error => alert(error.message)));
   } catch (error) { $("upcomingNotice").hidden = true; }
 }
 async function downloadCalendar(id, reminderMinutes = '1440', durationMinutes = '60') {
@@ -852,6 +890,67 @@ async function downloadCalendar(id, reminderMinutes = '1440', durationMinutes = 
   const url = URL.createObjectURL(await response.blob());
   const link = document.createElement('a'); link.href = url; link.download = 'appointment.ics'; link.click();
   setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+// Account access is separate from the people whose health records are stored.
+const deliveryLabel = status => ({sent:'Sent via Gmail',failed:'Sending failed',unknown:'Not confirmed — check Gmail Sent',sending:'Sending not confirmed yet'}[status] || 'Not sent');
+async function openAccess(notice='') {
+  if(!$("accessDialog").open) $("accessDialog").showModal();
+  $("accessBody").textContent='Loading household access…';
+  try {
+    const [access,email]=await Promise.all([api('/household/access'),api('/email/status')]);
+    $("accessBody").innerHTML=`<p role="status">${esc(notice)}</p><h3>Email through Gmail</h3>
+      <p>${email.connected ? `Connected as ${esc(email.sender)}.` : 'Connect the owner’s Gmail account to send household and calendar invitations.'}</p>
+      <button class="btn" id="connectGmail" type="button" ${!email.configured?'disabled':''}>${email.connected?'Reconnect Gmail':'Connect Gmail'}</button>
+      ${email.connected?'<button class="linkish" id="disconnectGmail" type="button">Disconnect Gmail</button>':''}
+      ${!email.configured?'<p class="hint">The app administrator must configure MAIL_ENCRYPTION_KEY before Gmail can be connected.</p>':''}
+      ${!email.connected?`<details class="hint"><summary>Gmail setup for the app administrator</summary><p>Enable the Gmail API in the app’s Google Cloud project and register this OAuth callback: <code>${esc(email.callbackUrl)}</code></p></details>`:''}
+      <h3>Invite someone</h3><p>Invited accounts can access all health records in this household. Adding a health profile does not give that person login access.</p>
+      <form id="inviteForm" class="profile-form"><label>Email<input id="inviteEmail" type="email" required maxlength="254" autocomplete="email"></label>
+      <label>Access<select id="inviteRole"><option value="viewer">View only</option><option value="editor">Can add and edit records</option></select></label>
+      <button class="btn primary" type="submit" ${!email.connected||!email.configured?'disabled':''}>Send invitation</button><p class="hint">The link expires after 7 days. They must sign in with Google using this email.</p><p class="error" id="inviteError" role="alert"></p></form>
+      <h3>People with access</h3><div id="accessUsers">${access.users.map(person=>`<div class="record-item"><strong>${esc(person.name)}</strong><p>${esc(person.email)}</p>${person.role==='owner'?'<span>Owner</span>':`<label>Access <select data-access-user="${person.id}"><option value="viewer" ${person.role==='viewer'?'selected':''}>View only</option><option value="editor" ${person.role==='editor'?'selected':''}>Can edit</option></select></label> <button class="linkish error" data-remove-user="${person.id}" type="button">Remove access</button>`}</div>`).join('')}</div>
+      <h3>Invitations</h3><div id="accessInvitations">${access.invitations.length?access.invitations.map(invite=>`<div class="record-item"><strong>${esc(invite.email)}</strong><p>${esc(invite.role)} · ${esc(invite.status==='pending'&&new Date(invite.expires_at)<new Date()?'expired':invite.status)} · ${esc(deliveryLabel(invite.delivery_status))}</p>${invite.status==='pending'?`<button class="linkish" data-resend-invite="${invite.id}" type="button" ${!email.connected||!email.configured?'disabled':''}>Resend invitation</button> <button class="linkish error" data-revoke-invite="${invite.id}" type="button">Revoke</button>`:''}</div>`).join(''):'<p>No invitations yet.</p>'}</div>`;
+    $("connectGmail").onclick=async()=>{try{$("connectGmail").disabled=true;const result=await api('/email/gmail/connect',{method:'POST'});location.assign(result.url);}catch(error){await openAccess(error.message);}};
+    if($("disconnectGmail")) $("disconnectGmail").onclick=async()=>{if(!confirm('Stop this app from sending through Gmail? Household access will stay the same.'))return;try{await api('/email/gmail',{method:'DELETE'});await openAccess('Gmail disconnected.');}catch(error){await openAccess(error.message);}};
+    $("inviteForm").onsubmit=async event=>{
+      event.preventDefault();const button=event.target.querySelector('[type="submit"]');button.disabled=true;
+      try{const result=await api('/household/invitations',{method:'POST',body:JSON.stringify({email:$("inviteEmail").value.trim(),role:$("inviteRole").value,operationId:crypto.randomUUID()})});await openAccess(result.message||deliveryLabel(result.status));}
+      catch(error){$("inviteError").textContent=error.message;button.disabled=false;}
+    };
+    $("accessUsers").querySelectorAll('[data-access-user]').forEach(select=>select.onchange=async()=>{select.disabled=true;try{await api(`/household/users/${select.dataset.accessUser}`,{method:'PATCH',body:JSON.stringify({role:select.value})});await openAccess('Access updated.');}catch(error){await openAccess(error.message);}});
+    $("accessUsers").querySelectorAll('[data-remove-user]').forEach(button=>button.onclick=async()=>{if(!confirm('Remove this account’s access to the household? Their health records will remain.'))return;try{await api(`/household/users/${button.dataset.removeUser}`,{method:'DELETE'});await openAccess('Access removed.');}catch(error){await openAccess(error.message);}});
+    $("accessInvitations").querySelectorAll('[data-resend-invite]').forEach(button=>button.onclick=async()=>{button.disabled=true;try{const result=await api(`/household/invitations/${button.dataset.resendInvite}/resend`,{method:'POST',body:JSON.stringify({operationId:crypto.randomUUID()})});await openAccess(result.message||`${deliveryLabel(result.status)}. The previous invitation link has been replaced.`);}catch(error){await openAccess(error.message);}});
+    $("accessInvitations").querySelectorAll('[data-revoke-invite]').forEach(button=>button.onclick=async()=>{button.disabled=true;try{await api(`/household/invitations/${button.dataset.revokeInvite}`,{method:'DELETE'});await openAccess('Invitation revoked.');}catch(error){await openAccess(error.message);}});
+  } catch(error) {$("accessBody").innerHTML=`<p class="error" role="alert">${esc(error.message)}</p>`;}
+}
+$("openAccess").onclick=()=>openAccess();
+$("closeAccess").onclick=()=>$("accessDialog").close();
+$("closeCalendar").onclick=()=>$("calendarDialog").close();
+async function openCalendarDialog(id,reminder='1440',duration='60') {
+  if(!$("calendarDialog").open) $("calendarDialog").showModal();
+  $("calendarBody").textContent='Loading calendar options…';
+  try {
+    const writable=state.me.user.role!=='viewer';
+    const [recipients,email]=writable?await Promise.all([api('/household/people'),api('/email/status')]):[[],{connected:false,configured:false}];
+    $("calendarBody").innerHTML=`<p>Choose who should receive this appointment invitation. The email shares the selected member’s name, appointment time, provider, and location. It does not include health reports or clinical notes.</p>
+      <div class="calendar-options"><label>Reminder <select id="emailReminder"><option value="1440">1 day before</option><option value="60">1 hour before</option><option value="15">15 minutes before</option></select></label><label>Duration <select id="emailDuration"><option value="30">30 minutes</option><option value="60">1 hour</option><option value="90">90 minutes</option><option value="120">2 hours</option></select></label></div>
+      ${writable?`<fieldset><legend>Household recipients</legend>${recipients.map(person=>`<label style="display:block;margin:8px 0"><input type="checkbox" name="calendarRecipient" value="${person.id}"> ${esc(person.name)} (${esc(person.email)})</label>`).join('')}</fieldset>
+      <p class="hint">${email.connected?`Sent from ${esc(email.sender)}.`:'Ask the household owner to connect Gmail from Household access before emailing invitations.'}</p>
+      <button class="btn primary" id="sendCalendarEmail" type="button" ${!email.connected||!email.configured?'disabled':''}>Email invitation</button>`:''}
+      <button class="btn" id="downloadCalendarFile" type="button">Download .ics instead</button><p class="hint">Accept the invitation in your calendar to receive reminders. Later app changes do not automatically update this event.</p><p id="calendarEmailStatus" role="status"></p>`;
+    $("emailReminder").value=String(reminder);$("emailDuration").value=String(duration);
+    $("downloadCalendarFile").onclick=()=>downloadCalendar(id,$("emailReminder").value,$("emailDuration").value).catch(error=>{$("calendarEmailStatus").textContent=error.message;});
+    const operationId=crypto.randomUUID();
+    if($("sendCalendarEmail")) $("sendCalendarEmail").onclick=async()=>{
+      const ids=[...$("calendarBody").querySelectorAll('[name="calendarRecipient"]:checked')].map(input=>input.value);
+      if(!ids.length){$("calendarEmailStatus").textContent='Select at least one recipient.';return;}
+      $("sendCalendarEmail").disabled=true;
+      $("calendarBody").querySelectorAll('select,input').forEach(input=>input.disabled=true);
+      try{const result=await api(`/appointments/${id}/email`,{method:'POST',body:JSON.stringify({operationId,recipientUserIds:ids,reminderMinutes:Number($("emailReminder").value),durationMinutes:Number($("emailDuration").value)})});$("calendarEmailStatus").textContent=result.results.map(row=>`${recipients.find(person=>person.id===row.userId)?.name||'Recipient'}: ${row.message||deliveryLabel(row.status)}`).join(' · ');}
+      catch(error){$("calendarEmailStatus").textContent=error.message;$("sendCalendarEmail").disabled=false;}
+    };
+  } catch(error){$("calendarBody").innerHTML=`<p class="error" role="alert">${esc(error.message)}</p>`;}
 }
 
 // ───── start ─────

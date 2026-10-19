@@ -12,8 +12,9 @@
     "start": "node --env-file-if-exists=.env --env-file-if-exists=.env.local dist/src/server.js",
     "db:migrate": "node --env-file-if-exists=.env --env-file-if-exists=.env.local --import tsx scripts/migrate.ts",
     "db:setup-neon": "node --env-file-if-exists=.env --env-file-if-exists=.env.local --import tsx scripts/setup-neon.ts",
+    "email:setup-key": "node --import tsx scripts/setup-email-key.ts",
     "typecheck": "tsc --noEmit",
-    "test": "tsx --test test/vitals.test.ts test/connection.test.ts && node --env-file=.env --import tsx --import ./test/setup-auth.ts --test test/integration.test.ts test/graph.test.ts test/members.test.ts test/labs.test.ts test/auth.test.ts",
+    "test": "tsx --test test/vitals.test.ts test/connection.test.ts && node --env-file=.env --import tsx --import ./test/setup-auth.ts --test test/integration.test.ts test/graph.test.ts test/members.test.ts test/labs.test.ts test/auth.test.ts test/mail.test.ts",
     "audit:verify": "tsx --env-file=.env scripts/verify-audit.ts"
   },
   "dependencies": {

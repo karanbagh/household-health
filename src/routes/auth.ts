@@ -11,7 +11,7 @@ export async function authRoutes(app:FastifyInstance, options:FastifyPluginOptio
   app.get("/auth/status",async req=>{
     const session=config.authMode==="google"?await sessionIdentity(req):null;
     const memberships=session?await pool.query("select * from auth_memberships_by_user($1)",[session.user_id]):null;
-    return {mode:config.authMode,loginUrl:config.google.origin+"/api/auth/google",configured:Boolean(config.google.clientId&&config.google.clientSecret),user:session?{email:session.email,name:session.display_name}:null,csrfToken:session?.csrf_token??null,needsHousehold:Boolean(session&&!memberships?.rows.length)};
+    return {mode:config.authMode,loginUrl:config.google.origin+"/api/auth/google",configured:Boolean(config.google.clientId&&config.google.clientSecret),user:session?{email:session.email,name:session.display_name}:null,csrfToken:session?.csrf_token??null,needsHousehold:Boolean(session&&!memberships?.rows.length),households:memberships?.rows.map((row: {household_id:string;household_name:string;role:string})=>({id:row.household_id,name:row.household_name,role:row.role}))??[]};
   });
   app.get("/auth/google",async(_req,reply)=>{
     if(config.authMode!=="google") return reply.code(404).send({error:"Google sign-in is not enabled"});
